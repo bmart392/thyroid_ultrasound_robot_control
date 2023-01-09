@@ -6,7 +6,7 @@ from franka_msgs.msg import FrankaState
 from rv_msgs.msg import ManipulatorState
 from std_msgs.msg import Float64, String, Bool
 
-from numpy import sign, zeros, array, sum, sqrt, mean
+from numpy import sign, zeros, array, sum, sqrt, mean, median, append, arange
 
 class RobotControlNode:
 
@@ -14,7 +14,7 @@ class RobotControlNode:
 
         # Define arrays to store gain constants
         self.position_based_gains = array([.01, .01, .01, .01, .01, .01])
-        self.force_based_gains = array([.01, .01, .001, .01, .01, .01])
+        self.force_based_gains = array([.01, .01, .005, .01, .01, .01])
 
         # Define variables to store data for force history
         self.force_history_length = 30
@@ -82,22 +82,22 @@ class RobotControlNode:
     def robot_sensed_force_callback(self, data: WrenchStamped):
 
         # Pop out an element from each history if too many have been stored
-        for dimension in self.force_history:
-            if len(dimension) > self.force_history_length:
-                dimension.pop(0)
+        for dimension, index in zip(self.force_history, arange(6)):
+            if len(dimension) >= self.force_history_length:
+                self.force_history[index] = dimension[1:]
 
         # Add in the the new value
-        # self.force_history[0].append(data.wrench.force.x)
-        # self.force_history[1].append(data.wrench.force.y)
-        self.force_history[2].append(data.wrench.force.z)
-        # self.force_history[3].append(data.wrench.torque.x)
-        # self.force_history[4].append(data.wrench.torque.y)
-        # self.force_history[5].append(data.wrench.torque.z)
+        # self.force_history[0] = append(self.force_history[0], data.wrench.force.x)
+        # self.force_history[1] = append(self.force_history[1], data.wrench.force.y)
+        self.force_history[2] = append(self.force_history[2], data.wrench.force.z)
+        # self.force_history[3] = append(self.force_history[3], data.wrench.torque.x)
+        # self.force_history[4] = append(self.force_history[4], data.wrench.torque.y)
+        # self.force_history[5] = append(self.force_history[5], data.wrench.torque.z)
 
-        # Average the force history to find a more real force value
+        # Average the force history to find a more consistent force value
         self.robot_sensed_force[0] = 0  # mean(self.force_history[0]) 
         self.robot_sensed_force[1] = 0  # mean(self.force_history[1])
-        self.robot_sensed_force[2] = mean(self.force_history[2])
+        self.robot_sensed_force[2] = median(self.force_history[2])
         self.robot_sensed_force[3] = 0  # mean(self.force_history[3])
         self.robot_sensed_force[4] = 0  # mean(self.force_history[4])
         self.robot_sensed_force[5] = 0  # mean(self.force_history[5])
@@ -143,14 +143,29 @@ class RobotControlNode:
 
     # Pull center image command from message
     def center_image_callback(self, data: Bool):
+        if not self.center_image_command == data.data:
+            if data.data:
+                print("Image feedback turned on.")
+            else:
+                print("Image feedback turned off.")
         self.center_image_command = data.data
 
     # Pull move to goal command from message
     def move_to_goal_callback(self, data: Bool):
+        if not self.move_to_goal_command == data.data:
+            if data.data:
+                print("Moving to goal position.")
+            else:
+                print("Not moving to goal.")
         self.move_to_goal_command = data.data
 
     # Pull use force feedback command from message
     def use_force_feedback_callback(self, data: Bool):
+        if not self.use_force_feedback_command == data.data:
+            if data.data:
+                print("Force feedback turned on.")
+            else:
+                print("Force feedback turned off.")
         self.use_force_feedback_command = data.data
 
     # Calculate the control input based on the goal pose
@@ -175,15 +190,15 @@ if __name__ == '__main__':
 
         if node.move_to_goal_command:
             control_input_array = control_input_array + node.position_based_control_input
-            print("Goal based control input used.")
+            # print("Goal based control input used.")
 
         if node.center_image_command:
             control_input_array = control_input_array + node.image_based_control_input
-            print("Image centering control input used.")
+            # print("Image centering control input used.")
 
         if node.use_force_feedback_command:
             control_input_array = control_input_array + node.force_based_control_input 
-            print("Force feedback control input used.")
+            # print("Force feedback control input: ", node.force_based_control_input[2])
 
         # Create a message and fill it with the desired control input
         control_input_message = TwistStamped()
