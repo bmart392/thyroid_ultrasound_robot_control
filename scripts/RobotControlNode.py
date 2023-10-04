@@ -1,16 +1,28 @@
 #!/usr/bin/env python3
 
-import rospy
+"""
+File containing the RobotControlNode class.
+"""
+
+# Import standard ros packages
+from rospy import is_shutdown, init_node, Rate, Publisher, Subscriber
 from geometry_msgs.msg import TwistStamped, PoseStamped, WrenchStamped
 from franka_msgs.msg import FrankaState
 from rv_msgs.msg import ManipulatorState
 from std_msgs.msg import Float64, String, Bool
 
+# Import standard packages
 from numpy import sign, zeros, array, sum, sqrt, mean, median, append, arange
+
+# TODO - High - Verify position error is being properly received
+
 
 class RobotControlNode:
 
     def __init__(self) -> None:
+
+        # Define flag to know when the image is centered
+        self.is_image_centered = False
 
         # Define arrays to store gain constants
         self.position_based_gains = array([.01, .01, .01, .01, .01, .01])
@@ -19,7 +31,6 @@ class RobotControlNode:
         # Define variables to store data for force history
         self.force_history_length = 30
         self.force_history = [array([]), array([]), array([]), array([]), array([]), array([])]
-
         
         # Define control inputs to be used
         self.image_based_control_input = zeros(6)
@@ -41,42 +52,94 @@ class RobotControlNode:
         self.use_force_feedback_command = False
         
         # Initialize the node
-        rospy.init_node('robot_control_node')
+        init_node('robot_control_node')
 
         # Set publishing rate
-        self.rate = rospy.Rate(100)  # hz
+        self.rate = Rate(100)  # hz
         
         # Create control input subscribers
-        self.image_based_control_input_subscriber = rospy.Subscriber('/control_input/image_based', TwistStamped, self.image_based_control_input_callback)
-        self.robot_sensed_force_subscriber = rospy.Subscriber('/franka_state_controller/F_ext', WrenchStamped, self.robot_sensed_force_callback)
-        self.robot_current_pose_subscriber = rospy.Subscriber('/franka_state_controller/franka_states', FrankaState, self.robot_current_pose_callback)
+        Subscriber('/control_error/image_based', TwistStamped, self.image_based_control_error_callback)
+        Subscriber('/franka_state_controller/F_ext', WrenchStamped, self.robot_sensed_force_callback)
+        Subscriber('/franka_state_controller/franka_states', FrankaState, self.robot_current_pose_callback)
 
         # Create goal state subscribers
-        self.goal_pose_subscriber = rospy.Subscriber('/goal/pose', PoseStamped, self.goal_pose_callback)
-        self.goal_force_subscriber = rospy.Subscriber('/goal/force', WrenchStamped, self.goal_force_callback)
+        Subscriber('/goal/pose', PoseStamped, self.goal_pose_callback)
+        Subscriber('/goal/force', WrenchStamped, self.goal_force_callback)
         
         # Create command subscirbers
-        self.stop_motion_subscriber = rospy.Subscriber('/command/stop_motion', Bool, self.stop_motion_callback)
-        self.center_image_subscriber = rospy.Subscriber('/command/center_image', Bool, self.center_image_callback)
-        self.move_to_goal_subscriber = rospy.Subscriber('/command/move_to_goal', Bool, self.move_to_goal_callback)
-        self.use_force_feedback_subscriber = rospy.Subscriber('/command/use_force_feedback', Bool, self.use_force_feedback_callback)
+        Subscriber('/command/stop_motion', Bool, self.stop_motion_callback)
+        Subscriber('/command/center_image', Bool, self.center_image_callback)
+        Subscriber('/command/move_to_goal', Bool, self.move_to_goal_callback)
+        Subscriber('/command/use_force_feedback', Bool, self.use_force_feedback_callback)
 
         # Create status publishers
-        self.was_last_goal_reached_status_publisher = rospy.Publisher('/status/goal_reached', Bool, queue_size=1)
-        self.current_pose_status_publisher = rospy.Publisher('/status/current_pose', PoseStamped, queue_size=1)
+        self.was_last_goal_reached_status_publisher = Publisher('/status/goal_reached', Bool, queue_size=1)
+        self.current_pose_status_publisher = Publisher('/status/current_pose', PoseStamped, queue_size=1)
 
         # Create robot cartesian velocity publisher
-        self.cartesian_velocity_publisher = rospy.Publisher('/arm/cartesian/velocity', TwistStamped, queue_size=1)
+        self.cartesian_velocity_publisher = Publisher('/arm/cartesian/velocity', TwistStamped, queue_size=1)
+
+        # Define a publisher to publish if the image is centered
+        self.image_centered_publisher = Publisher('is_image_centered', Bool, queue_size=1)
 
     # Pull control inputs from message
-    def image_based_control_input_callback(self, data: TwistStamped):
+    def image_based_control_error_callback(self, data: TwistStamped):
 
-        self.image_based_control_input[0] = data.twist.linear.x 
-        self.image_based_control_input[1] = data.twist.linear.y
-        self.image_based_control_input[2] = data.twist.linear.z
-        self.image_based_control_input[3] = data.twist.angular.x
-        self.image_based_control_input[4] = data.twist.angular.y
-        self.image_based_control_input[5] = data.twist.angular.z
+        # Define the acceptable limits of error for each dimension
+        acceptable_errors = [0.005,  # meters in x
+                            1.01,  # meters in y
+                            1.01,  # meters in z
+                            10,  # deg
+                            10,  # deg
+                            10,  # deg
+                            ]
+        
+        # Define the control input gains for each dimension
+        control_input_gains = [
+            # [ k_p, k_d]
+            [0.5, 0.0],  # x
+            [1.0, 0.0],  # y
+            [1.0, 0.0],  # z
+            [1.0, 0.0],  # angle x
+            [1.0, 0.0],  # angle y
+            [1.0, 0.0],  # angle z
+        ]
+
+        # Pull the current error out of the twist
+        current_error = zeros(6)
+        current_error[0] = data.twist.linear.x
+        current_error[1] = data.twist.linear.y
+        current_error[2] = data.twist.linear.z
+        current_error[3] = data.twist.angular.x
+        current_error[4] = data.twist.angular.y
+        current_error[5] = data.twist.angular.z
+
+        # Define a temporary flag to determine if the image is centered
+        temp_is_image_centered = True
+
+        # Define a temporary place to store the control inputs
+        temp_control_inputs = array([])
+
+        # Check if the error is within an acceptable amount
+        for single_dimension_error, gains, single_dimension_acceptable_error in zip(current_error, control_input_gains, acceptable_errors):
+
+            # Determine if the error is acceptable in a single dimension
+            is_dimension_centered = single_dimension_acceptable_error >= abs(single_dimension_error)
+
+            # Calculate the control input for the given dimension
+            if not is_dimension_centered:
+                temp_control_inputs.append(current_error*gains[0])
+            else:
+                temp_control_inputs.append(0)
+
+            # Calculate if the image is centered in all dimensions    
+            temp_is_image_centered = temp_is_image_centered * is_dimension_centered
+
+        # Save the control input calculated here
+        self.image_based_control_input = temp_control_inputs
+
+        # Save the flag for determining if the image is centered
+        self.is_image_centered = temp_is_image_centered
 
     # Pull force values felt currently by robot
     def robot_sensed_force_callback(self, data: WrenchStamped):
@@ -183,7 +246,7 @@ if __name__ == '__main__':
     node = RobotControlNode()
     print("Node initialized. Press ctrl+c to terminate.")
 
-    while not rospy.is_shutdown():
+    while not is_shutdown():
 
         # Create blank array to store the final control input as an array
         control_input_array = zeros(6)
@@ -210,6 +273,9 @@ if __name__ == '__main__':
         control_input_message.twist.angular.z = control_input_array[5]
 
         node.cartesian_velocity_publisher.publish(control_input_message)
+
+        # Publish if the image is centered
+        node.image_centered_publisher.publish(Bool(node.is_image_centered))
         
         # node.was_last_goal_reached_status_publisher.publish(Bool(node.))
         
