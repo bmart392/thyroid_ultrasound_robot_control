@@ -79,6 +79,9 @@ class RobotControlNode:
         # Define a publisher to publish if the image is centered
         # self.image_centered_publisher = Publisher('is_image_centered', Bool, queue_size=1)
 
+        # Define a publisher to publish the cleaned reading of the sensed force
+        self.cleaned_force_publisher = Publisher('/force_control/sensed_force_cleaned', WrenchStamped, queue_size=1)
+
     # Pull control inputs from message
     def image_based_control_error_callback(self, data: TwistStamped) -> None:
 
@@ -150,10 +153,20 @@ class RobotControlNode:
         # Average the force history to find a more consistent force value
         self.robot_sensed_force[0] = 0  # mean(self.force_history[0]) 
         self.robot_sensed_force[1] = 0  # mean(self.force_history[1])
-        self.robot_sensed_force[2] = median(self.force_history[2])
+        self.robot_sensed_force[2] = round(median(self.force_history[2]), 2)
         self.robot_sensed_force[3] = 0  # mean(self.force_history[3])
         self.robot_sensed_force[4] = 0  # mean(self.force_history[4])
         self.robot_sensed_force[5] = 0  # mean(self.force_history[5])
+
+        cleaned_force_message = WrenchStamped()
+        cleaned_force_message.wrench.force.x = self.robot_sensed_force[0]
+        cleaned_force_message.wrench.force.y = self.robot_sensed_force[1]
+        cleaned_force_message.wrench.force.z = self.robot_sensed_force[2]
+        cleaned_force_message.wrench.torque.x = self.robot_sensed_force[3]
+        cleaned_force_message.wrench.torque.y = self.robot_sensed_force[4]
+        cleaned_force_message.wrench.torque.z = self.robot_sensed_force[5]
+
+        self.cleaned_force_publisher.publish(cleaned_force_message)
 
     def robot_current_pose_callback(self, data: FrankaState) -> None:
         """
@@ -227,6 +240,8 @@ class RobotControlNode:
                 print("Force feedback turned off.")
         self.use_force_feedback_flag = data.data
 
+        print("Command sent: " + str(data.data))
+
     def main(self) -> None:
         """
         Calculates the correct control input based on the current error in the system and
@@ -246,6 +261,10 @@ class RobotControlNode:
             # print("Image centering control input used.")
 
         if self.use_force_feedback_flag:
+            print("Goal Force: " + str(self.goal_force[2]))
+            print("Sensed Force: " + str(self.robot_sensed_force[2]))
+            print("Control Input: " + str((self.force_based_gains *
+                                                         (-self.goal_force + self.robot_sensed_force))))
             control_input_array = control_input_array + (self.force_based_gains *
                                                          (-self.goal_force + self.robot_sensed_force))
             # print("Force feedback control input: ", node.force_based_control_input[2])
@@ -275,6 +294,6 @@ if __name__ == '__main__':
     while not is_shutdown():
         # Run the main function of the node
         node.main()
-
+ 
         # Wait to run the node again
         publishing_rate.sleep()
