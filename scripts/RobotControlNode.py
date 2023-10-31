@@ -55,8 +55,8 @@ class RobotControlNode:
         self.linear_x_controller = BasicController(p_gain=0.10, error_tolerance=0.003,
                                                    d_gain=0.05, i_gain=1,
                                                    set_point=0.)  # x linear, image-based, error = meters
-        self.linear_y_controller = SurfaceController(p_gain=0.300, error_tolerance=0.005,
-                                                     d_gain=0.001, i_gain=0.005)  # y linear, position-based, error = meters
+        self.linear_y_controller = SurfaceController(p_gain=0.150, error_tolerance=0.005,
+                                                     d_gain=0.0005, i_gain=0.0005)  # y linear, position-based, error = meters
         self.linear_z_controller = BasicController(p_gain=0.10, error_tolerance=0.100,
                                                    d_gain=0.05, i_gain=1)  # z linear, force-based, error = Newtons
         self.angular_x_controller = BasicController(p_gain=0.00, error_tolerance=1.000,
@@ -109,17 +109,21 @@ class RobotControlNode:
         self.O_T_EE = None
 
         # Initialize the node
-        init_node('robot_control_node')
+        init_node('RobotControlNode')
 
         # Create control input subscribers
         Subscriber('/control_error/image_based', TwistStamped, self.image_based_control_error_callback)
-        Subscriber('/franka_state_controller/F_ext', WrenchStamped, self.robot_sensed_force_callback)
+        # Subscriber('/franka_state_controller/F_ext', WrenchStamped, self.robot_sensed_force_callback)
+        Subscriber('/franka_state_controller/F_ext', WrenchStamped, print("test_force"))
         Subscriber('/franka_state_controller/franka_states', FrankaState, self.robot_current_pose_callback)
-        Subscriber('tf', TFMessage, self.create_transformation_callback)
-        Subscriber('tf_static', TFMessage, self.read_static_transformation_callback)
+        # Subscriber('tf', TFMessage, self.create_transformation_callback)
+        Subscriber('tf', TFMessage, print("test"))
+        # Subscriber('tf_static', TFMessage, self.read_static_transformation_callback)
+        Subscriber('tf_static', TFMessage, print("test2"))
 
         # Create goal state subscribers
-        Subscriber('/position_control/goal_surface', Float64MultiArray, self.goal_surface_callback)
+        # Subscriber('/position_control/goal_surface', Float64MultiArray, self.goal_surface_callback)
+        Subscriber('/position_control/goal_surface', Float64MultiArray, print("hi"))
         Subscriber('/force_control/set_point', Float64, self.force_set_point_callback)
 
         # Create command subscribers
@@ -251,6 +255,12 @@ class RobotControlNode:
                 array([self.O_T_EE[0][3], self.O_T_EE[1][3], self.O_T_EE[2][3]])
             )))
 
+            # If the set point has been reached, 
+            if y_lin_set_point_reached:
+
+                # Clear the set point from the controller to avoid race conditions
+                self.linear_y_controller.update_set_point(None)
+
             # self.current_pose[0] = data.O_T_EE[3]
             # self.current_pose[1] = data.O_T_EE[7]
             # self.current_pose[2] = data.O_T_EE[11]
@@ -268,12 +278,11 @@ class RobotControlNode:
         """
         Captures the goal surface sent to the node.
         """
-        print("new pose goal received")
         # Create a new surface based on the given vertices and set that surface as the set-point for the controller
+        print("new set-point reached")
         self.linear_y_controller.update_set_point(
             Surface(array(data.data).reshape((data.layout.dim[0].size, data.layout.dim[1].size)))
         )
-        print(self.linear_y_controller.set_point)
 
     def force_set_point_callback(self, data: Float64) -> None:
         """
@@ -445,7 +454,6 @@ class RobotControlNode:
             
             # Add the transformation to the dictionary
             self.create_transformation_from_transform(transform)
-
 
     def create_transformation_callback(self, data: TFMessage):
 
