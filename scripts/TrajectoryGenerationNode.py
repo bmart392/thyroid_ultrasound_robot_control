@@ -38,7 +38,7 @@ class TrajectoryGenerationNode:
         # Define a
 
         # Create a subscriber to listen for the current position of the robot
-        Subscriber('/franka_state_controller/franka_states', FrankaState, self.robot_current_pose_callback)
+        Subscriber('O_T_EE', Float64MultiArray, self.robot_current_pose_callback)
 
         # Create a subscriber to listen for when the current position goal has been reached
         Subscriber('/position_control/goal_reached', Bool, self.goal_reached_callback)
@@ -67,9 +67,9 @@ class TrajectoryGenerationNode:
 
             # Create linear vectors on each plane between the current position and a distance in the x-axis containing
             # a given number of points
-            trajectory = array([linspace(start=array([0, 0, 0]), stop=array([travel_distance, 0, 0]), num=num_points),
-                                linspace(start=array([0, 1, 0]), stop=array([travel_distance, 1, 0]), num=num_points),
-                                linspace(start=array([0, 0, 1]), stop=array([travel_distance, 0, 1]), num=num_points)])
+            trajectory = array([linspace(start=array([0, 0, 0]), stop=array([0, travel_distance, 0]), num=num_points),
+                                linspace(start=array([1, 0, 0]), stop=array([1, travel_distance, 0]), num=num_points),
+                                linspace(start=array([0, 0, 1]), stop=array([0, travel_distance, 1]), num=num_points)])
 
             # Transform each point coordinate into the origin frame of the robot
             ii = 0
@@ -149,10 +149,10 @@ class TrajectoryGenerationNode:
             self.current_goal_position_message.layout.dim[1].stride = points_to_send.shape[1]
             self.current_goal_position_message.data = points_to_send.reshape([points_to_send.size])
 
-    def robot_current_pose_callback(self, data: FrankaState):
+    def robot_current_pose_callback(self, data: Float64MultiArray):
 
         # Save the transformation sent by the robot
-        self.robot_pose_transformation = array(data.O_T_EE).reshape((4, 4))
+        self.robot_pose_transformation = array(data.data).reshape((4, 4))
 
     def main(self):
 

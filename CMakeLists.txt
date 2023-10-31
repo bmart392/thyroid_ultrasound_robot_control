@@ -14,6 +14,7 @@ find_package(catkin REQUIRED COMPONENTS
   rv_msgs
   std_msgs
   franka_msgs
+  roslaunch
 )
 
 ## System dependencies are found with CMake's conventions
