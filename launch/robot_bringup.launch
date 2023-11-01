@@ -6,12 +6,6 @@
 	<node name="RobotControlNode" pkg="thyroid_ultrasound_robot_control" type="RobotControlNode.py"/>
 	
 	<!-- start the trajectory generation node -->
-	<node name="TrajectoryGenerationNode" pkg="thyroid_ultrasound_robot_control" type="TrajectoryGenerationNode.py"/>
-	
-	<!-- start the rqt gui -->
-	<node name="rqt_gui" pkg="rqt_gui" type="rqt_gui"/>
-	
-	<!-- start the robot controller using the bringup launch file -->
-	<include file="$(find rv_panda_driver)/launch/robot_bringup.launch"/>
+	<!--<node name="TrajectoryGenerationNode" pkg="thyroid_ultrasound_robot_control" type="TrajectoryGenerationNode.py"/>-->
 	
 </launch>

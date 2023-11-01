@@ -5,15 +5,17 @@ File containing the RobotControlNode class.
 """
 
 # Import standard ros packages
-from rospy import is_shutdown, init_node, Rate, Publisher, Subscriber
-from geometry_msgs.msg import TwistStamped, WrenchStamped, TransformStamped
+from rospy import is_shutdown, init_node, Rate, Publisher, Subscriber, Time
+from geometry_msgs.msg import TwistStamped, WrenchStamped, TransformStamped, Transform
+from tf import TransformBroadcaster
+from tf2_ros import StaticTransformBroadcaster
 from tf2_msgs.msg import TFMessage
 from franka_msgs.msg import FrankaState
-# from rv_msgs.msg import ManipulatorState
 from std_msgs.msg import Float64, Bool, UInt8, Float64MultiArray, MultiArrayDimension
 
 # Import standard packages
-from numpy import zeros, array, median, append, arange, delete, sum, dot, sqrt, cross, identity
+from numpy import zeros, array, median, append, arange, delete, sum, dot, sqrt, cross, identity, linspace
+from copy import copy
 from scipy.spatial.transform import Rotation
 
 # Define constants for each controller and controller channel
@@ -39,6 +41,7 @@ LINK_7: str = 'panda_link7'
 LINK_8: str = 'panda_link8'
 LINK_EE: str = 'panda_EE'
 
+
 # TODO - High - Verify position error is being properly received
 
 
@@ -55,10 +58,11 @@ class RobotControlNode:
         self.linear_x_controller = BasicController(p_gain=0.10, error_tolerance=0.003,
                                                    d_gain=0.05, i_gain=1,
                                                    set_point=0.)  # x linear, image-based, error = meters
-        self.linear_y_controller = SurfaceController(p_gain=0.150, error_tolerance=0.005,
-                                                     d_gain=0.0005, i_gain=0.0005)  # y linear, position-based, error = meters
-        self.linear_z_controller = BasicController(p_gain=0.10, error_tolerance=0.100,
-                                                   d_gain=0.05, i_gain=1)  # z linear, force-based, error = Newtons
+        self.linear_y_controller = SurfaceController(p_gain=0.300, error_tolerance=0.007,
+                                                     d_gain=0.0000,
+                                                     i_gain=0.0000)  # y linear, position-based, error = meters
+        self.linear_z_controller = BasicController(p_gain=.025, error_tolerance=0.100,
+                                                   d_gain=.005, i_gain=.0001)  # z linear, force-based, error = Newtons
         self.angular_x_controller = BasicController(p_gain=0.00, error_tolerance=1.000,
                                                     d_gain=0.00, i_gain=0)  # x rotation, not measured, error = degrees
         self.angular_y_controller = BasicController(p_gain=0.10, error_tolerance=0.500,
@@ -104,47 +108,58 @@ class RobotControlNode:
                                            LINK_8: array([]),
                                            LINK_EE: array([]),
                                            }
-        
+
         # Define a variable to save the current robot pose
-        self.O_T_EE = None
+        self.o_t_ee = None
+
+        # Create a variable to store which PID controller should be published and modified
+        self.selected_pid_controller = int(0)
+
+        # Define a variable to save the currently calculated trajectory
+        self.current_trajectory = None
+
+        # Define a variable to store the current trajectory set point
+        self.current_trajectory_set_point = None
 
         # Initialize the node
         init_node('RobotControlNode')
 
-        # Create control input subscribers
-        Subscriber('/control_error/image_based', TwistStamped, self.image_based_control_error_callback)
-        Subscriber('/franka_state_controller/F_ext', WrenchStamped, self.robot_sensed_force_callback)
-        # Subscriber('/franka_state_controller/franka_states', FrankaState, self.robot_current_pose_callback)
+        # Create transform subscribers to calculate the current robot pose
         Subscriber('tf', TFMessage, self.create_transformation_callback)
         Subscriber('tf_static', TFMessage, self.read_static_transformation_callback)
 
+        # Create control input subscribers
+        Subscriber('/control_error/image_based', TwistStamped, self.image_based_control_input_calculation)
+        Subscriber('/franka_state_controller/F_ext', WrenchStamped, self.robot_force_control_input_calculation)
+
         # Create goal state subscribers
-        Subscriber('/position_control/goal_surface', Float64MultiArray, self.goal_surface_callback)
         Subscriber('/force_control/set_point', Float64, self.force_set_point_callback)
 
         # Create command subscribers
         Subscriber('/command/use_image_feedback', Bool, self.use_image_feedback_command_callback)
         Subscriber('/command/use_pose_feedback', Bool, self.use_pose_feedback_command_callback)
         Subscriber('/command/use_force_feedback', Bool, self.use_force_feedback_command_callback)
+        Subscriber('/command/create_trajectory', Float64, self.create_trajectory_command_callback)
+        Subscriber('/command/clear_trajectory', Bool, self.clear_trajectory_command_callback)
 
-        # Create status publishers
-        # self.was_last_goal_reached_status_publisher = Publisher('/status/goal_reached', Bool, queue_size=1)
-        # self.current_pose_status_publisher = Publisher('/status/current_pose', PoseStamped, queue_size=1)
-
+        # Define publishers for robot information
         self.end_effector_transformation_publisher = Publisher('/O_T_EE', Float64MultiArray, queue_size=1)
+        self.cleaned_force_publisher = Publisher('/force_control/sensed_force_cleaned', WrenchStamped, queue_size=1)
 
         # Create robot cartesian velocity publisher
         self.cartesian_velocity_publisher = Publisher('/arm/cartesian/velocity', TwistStamped, queue_size=1)
 
-        # Define a publisher to publish if the image is centered
-        # self.image_centered_publisher = Publisher('is_image_centered', Bool, queue_size=1)
+        # Create a publisher for displaying the force error
+        self.force_based_error_publisher = Publisher('/force_control/error', Float64, queue_size=1)
+        self.force_based_controller_use_publisher = Publisher('/force_control/in_use', Bool, queue_size=1)
 
-        # Define a publisher to publish the cleaned reading of the sensed force
-        self.cleaned_force_publisher = Publisher('/force_control/sensed_force_cleaned', WrenchStamped, queue_size=1)
-
-        # Define a publisher to publish when the current goal has been reached
+        # Define publishers for displaying information about trajectory following
         self.position_goal_reached_publisher = Publisher('/position_control/goal_reached', Bool, queue_size=1)
-        self.position_error_publisher = Publisher('/position_controller/error', Float64, queue_size=1)
+        self.position_error_publisher = Publisher('/position_control/error', Float64, queue_size=1)
+        self.position_goal_surface_publisher = Publisher('/position_control/goal_surface',
+                                                         Float64MultiArray, queue_size=1)
+        self.position_goal_transform_publisher = StaticTransformBroadcaster()
+        self.position_based_controller_use_publisher = Publisher('/position_control/in_use', Bool, queue_size=1)
 
         # Create publishers and subscribers to tune the PID controllers
         Subscriber('/tuning/controller', UInt8, self.set_selected_controller_callback)
@@ -155,14 +170,17 @@ class RobotControlNode:
         self.i_gain_publisher = Publisher('/tuning/current/i_gain', Float64, queue_size=1)
         self.d_gain_publisher = Publisher('/tuning/current/d_gain', Float64, queue_size=1)
 
-        # Create a variable to store which PID controller should be published and modified
-        self.selected_pid_controller = int(0)
+    ##########################
+    # Calculate control inputs
+    # region
+    def image_based_control_input_calculation(self, data: TwistStamped) -> None:
 
-    # Pull control inputs from message
-    def image_based_control_error_callback(self, data: TwistStamped) -> None:
-
-        x_lin_output, x_lin_set_point_reached = self.linear_x_controller.calculate_output(data.twist.linear.x)
-        y_ang_output, y_ang_set_point_reached = self.angular_y_controller.calculate_output(data.twist.angular.y)
+        x_lin_output, x_lin_set_point_reached, x_lin_current_error = self.linear_x_controller.calculate_output(
+            data.twist.linear.x
+        )
+        y_ang_output, y_ang_set_point_reached, y_ang_current_error = self.angular_y_controller.calculate_output(
+            data.twist.angular.y
+        )
 
         self.image_based_control_input = [
             x_lin_output,  # x linear is measured
@@ -173,7 +191,7 @@ class RobotControlNode:
             0,  # z angular is not measured
         ]
 
-    def robot_sensed_force_callback(self, data: WrenchStamped) -> None:
+    def robot_force_control_input_calculation(self, data: WrenchStamped) -> None:
         """
         Saves the current force felt by the robot and calculates the median force felt by the robot in the recent past.
 
@@ -214,26 +232,30 @@ class RobotControlNode:
 
         self.cleaned_force_publisher.publish(cleaned_force_message)
 
-        output, set_point_reached = self.linear_z_controller.calculate_output(self.robot_sensed_force[2])
+        output, set_point_reached, current_error = self.linear_z_controller.calculate_output(self.robot_sensed_force[2])
 
+        # TODO make this motion in the z-axis of the end effector
         self.force_based_control_input = [
             0,  # x linear is not measured
             0,  # y linear is not measured
-            output,  # z linear is measured
+            -output,  # z linear is measured
             0,  # x angular is not measured
             0,  # y angular is not measured
             0,  # z angular is not measured
         ]
 
-    def robot_current_pose_callback(self, data: FrankaState) -> None:
+        self.force_based_error_publisher.publish(Float64(current_error))
+
+    def robot_pose_control_input_calculation(self) -> None:
         """
-        Captures the current pose of the robot from messages sent by the robot controller.
+        Calculate the robot pose based control input using the current pose and the pose goal
         """
-        
-        """if self.O_T_EE is not None:
+        # Only compute if the pose goal exists
+        if self.o_t_ee is not None:
+
             # Calculate the output based on the current distance to the surface
-            y_lin_output, y_lin_set_point_reached = self.linear_y_controller.calculate_output(
-                array([self.O_T_EE[0][3], self.O_T_EE[1][3], self.O_T_EE[2][3]])
+            y_lin_output, y_lin_set_point_reached, y_lin_current_error = self.linear_y_controller.calculate_output(
+                array([self.o_t_ee[0][3], self.o_t_ee[1][3], self.o_t_ee[2][3]])
             )
 
             # Update the position based control input
@@ -248,39 +270,25 @@ class RobotControlNode:
 
             # Publish if the goal position was reached
             self.position_goal_reached_publisher.publish(Bool(y_lin_set_point_reached))
-            self.position_error_publisher.publish(Float64(self.linear_y_controller.calculate_current_error(
-                array([self.O_T_EE[0][3], self.O_T_EE[1][3], self.O_T_EE[2][3]])
-            )))
+            self.position_error_publisher.publish(Float64(y_lin_current_error))
 
-            # If the set point has been reached, 
+            # If the set point has been reached,
             if y_lin_set_point_reached:
+                # Delete the first coordinate in the trajectory
+                self.current_trajectory = array([self.current_trajectory[0][1:],
+                                                 self.current_trajectory[1][1:],
+                                                 self.current_trajectory[2][1:],
+                                                 ])
 
-                # Clear the set point from the controller to avoid race conditions
-                self.linear_y_controller.update_set_point(None)"""
+                # Update the current trajectory set point as necessary
+                self.update_current_trajectory_set_point()
 
-            # self.current_pose[0] = data.O_T_EE[3]
-            # self.current_pose[1] = data.O_T_EE[7]
-            # self.current_pose[2] = data.O_T_EE[11]
-            # self.calculate_goal_based_control_input()
-            # self.was_last_goal_reached_status_publisher.publish(Bool(
-            #     sqrt(sum((self.current_pose - self.goal_pose) ** 2)) <= .01  # m
-            # ))
-            # temp_current_pose = PoseStamped()
-            # temp_current_pose.pose.position.x = self.current_pose[0]
-            # temp_current_pose.pose.position.y = self.current_pose[1]
-            # temp_current_pose.pose.position.z = self.current_pose[2]
-            # self.current_pose_status_publisher.publish(temp_current_pose)
+    # endregion
+    ##########################
 
-    def goal_surface_callback(self, data: Float64MultiArray) -> None:
-        """
-        Captures the goal surface sent to the node.
-        """
-        # Create a new surface based on the given vertices and set that surface as the set-point for the controller
-        print("new set-point reached")
-        self.linear_y_controller.update_set_point(
-            Surface(array(data.data).reshape((data.layout.dim[0].size, data.layout.dim[1].size)))
-        )
-
+    ####################
+    # Update goal values
+    # region
     def force_set_point_callback(self, data: Float64) -> None:
         """
         Saves the force set-point to a local variable.
@@ -292,6 +300,59 @@ class RobotControlNode:
         """
         self.linear_z_controller.update_set_point(data.data)
 
+    def update_current_trajectory_set_point(self):
+        """
+        Updates the current trajectory set point variable and the current trajectory variable depending on the
+        level of completion of the trajectory.
+        """
+
+        # If the trajectory is not empty
+        if self.current_trajectory.size > 0:
+
+            # Save the next surface to travel to
+            self.current_trajectory_set_point = array([self.current_trajectory[0][0],
+                                                       self.current_trajectory[1][0],
+                                                       self.current_trajectory[2][0],
+                                                       ])
+
+            # Create a new multi-dimension array message to transmit the goal surface information
+            current_trajectory_set_point_message = Float64MultiArray()
+
+            # Fill in the message with data from the current trajectory set point
+            current_trajectory_set_point_message.layout.dim.append(MultiArrayDimension)
+            current_trajectory_set_point_message.layout.dim[0].label = 'vectors'
+            current_trajectory_set_point_message.layout.dim[0].size = self.current_trajectory_set_point.shape[0]
+            current_trajectory_set_point_message.layout.dim[0].stride = self.current_trajectory_set_point.size
+            current_trajectory_set_point_message.layout.dim.append(MultiArrayDimension)
+            current_trajectory_set_point_message.layout.dim[1].label = 'dimensions'
+            current_trajectory_set_point_message.layout.dim[1].size = self.current_trajectory_set_point.shape[1]
+            current_trajectory_set_point_message.layout.dim[1].stride = self.current_trajectory_set_point.shape[1]
+            current_trajectory_set_point_message.data = self.current_trajectory_set_point.reshape(
+                [self.current_trajectory_set_point.size])
+
+            # Publish the message
+            self.position_goal_surface_publisher.publish(current_trajectory_set_point_message)
+
+            # Create a new surface based on the given vertices and set that surface as the set-point for the controller
+            self.linear_y_controller.update_set_point(
+                Surface(self.current_trajectory_set_point)
+            )
+
+            # Publish the current set point as a transform to visualize it in RViz
+            self.publish_goal_surface_as_transform()
+
+        # Otherwise clear the trajectory and the current set point
+        else:
+            self.current_trajectory = None
+            self.current_trajectory_set_point = None
+            self.linear_y_controller.update_set_point(None)
+
+    # endregion
+    ####################
+
+    ###########################
+    # Command message callbacks
+    # region
     def use_image_feedback_command_callback(self, data: Bool) -> None:
         """
         Update the use_image_feedback_flag based on the command value given.
@@ -327,6 +388,67 @@ class RobotControlNode:
 
         print("Command sent: " + str(data.data))
 
+    def create_trajectory_command_callback(self, data: Float64):
+        """
+        Create a trajectory using the given offset in the y-axis of the end effector.
+        """
+
+        # Do not try to create a trajectory unless the robot pose transformation is known
+        if self.o_t_ee is not None:
+
+            # Define the distance to travel and the number of points to generate along the way
+            travel_distance = data.data
+            num_points = 10
+
+            # Save a copy of the robot pose transformation to use to ensure data is not overwritten in the process
+            local_pose_transformation = copy(self.o_t_ee)
+
+            # Create linear vectors on each plane between the current position and a distance in the x-axis containing
+            # a given number of points
+            trajectory = array([linspace(start=array([0, 0, 0]), stop=array([travel_distance, 0, 0]), num=num_points),
+                                linspace(start=array([0, 1, 0]), stop=array([travel_distance, 1, 0]), num=num_points),
+                                linspace(start=array([0, 0, 1]), stop=array([travel_distance, 0, 1]), num=num_points)])
+
+            # Transform each point coordinate into the origin frame of the robot
+            ii = 0
+            for vector in trajectory:
+                jj = 0
+                for coordinate in vector:
+                    # Add a zero to the end of the coordinate to allow multiplication by the transformation matrix
+                    temp_coordinate = append(coordinate, 1)
+
+                    # Reshape the coordinate into a column vector
+                    temp_coordinate = temp_coordinate.reshape((4, 1))
+
+                    # Transform the coordinate into the origin frame of the robot
+                    temp_coordinate = local_pose_transformation @ temp_coordinate
+
+                    # Save the transformed coordinate into the trajectory
+                    trajectory[ii][jj] = temp_coordinate[0:3].reshape(3)
+
+                    jj = jj + 1
+                ii = ii + 1
+
+            # Save the generated trajectory as the current trajectory
+            self.current_trajectory = trajectory
+
+            # Set the current set point for the trajectory
+            self.update_current_trajectory_set_point()
+
+    def clear_trajectory_command_callback(self, data: Bool):
+        """
+        Clear the current trajectory from the node. NOT IMPLEMENTED
+        """
+        if data.data:
+            a = len(self.current_trajectory)
+            pass
+
+    # endregion
+    ###########################
+
+    ######################
+    # PID Tuning Callbacks
+    # region
     def set_selected_controller_callback(self, data: UInt8) -> None:
 
         # Save the selected controller
@@ -393,6 +515,137 @@ class RobotControlNode:
         self.i_gain_publisher.publish(Float64(selected_controller.i_gain))
         self.d_gain_publisher.publish(Float64(selected_controller.d_gain))
 
+    # endregion
+    ######################
+
+    #############################################################
+    # Calculate the equivalent transformation to the end effector
+    # region
+    def read_static_transformation_callback(self, data: TFMessage):
+        """
+        Read the static transformation between of Link 7.
+        """
+
+        # Pull out single transform
+        transform: TransformStamped = data.transforms[0]
+
+        # Make sure the transformation is from Link 8
+        if transform.child_frame_id == LINK_8:
+            # Add the transformation to the dictionary
+            self.create_transformation_from_transform(transform)
+
+    def create_transformation_callback(self, data: TFMessage):
+        """
+        Calculate the transformation to the end effector based on the transforms given.
+        """
+
+        # For each transformation sent
+        for transform in data.transforms:
+
+            # Tell python what it is
+            transform: TransformStamped
+
+            # Pull out the name of the transformation
+            transformation_name = transform.child_frame_id
+
+            # If the name matches a key value
+            if transformation_name in self.individual_transformations:
+                # Add the transformation to the dictionary
+                self.create_transformation_from_transform(transform)
+
+        if len(data.transforms) == 7 and self.individual_transformations[LINK_EE].size > 0:
+            # Define a variable to save the final transformation in
+            o_t_ee = identity(4)
+
+            # Iteratively calculate the final transformation through the transformation from each link
+            for key in [LINK_1, LINK_2, LINK_3, LINK_4, LINK_5, LINK_6, LINK_7, LINK_8, LINK_EE]:
+                o_t_ee = o_t_ee @ self.individual_transformations[key]
+
+            # Save the transformation for local use
+            self.o_t_ee = o_t_ee
+
+            # Define a new message object for publishing the transformation matrix
+            o_t_ee_msg = Float64MultiArray()
+            o_t_ee_msg.layout.dim.append(MultiArrayDimension)
+            o_t_ee_msg.layout.dim[0].label = 'rows'
+            o_t_ee_msg.layout.dim[0].size = 4
+            o_t_ee_msg.layout.dim[0].stride = 16
+            o_t_ee_msg.layout.dim.append(MultiArrayDimension)
+            o_t_ee_msg.layout.dim[0].label = 'columns'
+            o_t_ee_msg.layout.dim[0].size = 4
+            o_t_ee_msg.layout.dim[0].stride = 4
+            o_t_ee_msg.data = o_t_ee.reshape([16])
+
+            self.end_effector_transformation_publisher.publish(o_t_ee_msg)
+
+            # Calculate the control input based on the new robot pose
+            self.robot_pose_control_input_calculation()
+
+    def create_transformation_from_transform(self, transform: TransformStamped):
+        """
+        Add the given transform to dictionary of transformations after converting it to a homogeneous
+        transformation matrix.
+        """
+
+        # Make sure the dictionary exists before trying to use it
+        if self.individual_transformations is not None:
+            # Pull out the translation vector and the rotation quaternion
+            translation_vector = array([transform.transform.translation.x,
+                                        transform.transform.translation.y,
+                                        transform.transform.translation.z])
+            rotation_quaternion = array([transform.transform.rotation.x,
+                                         transform.transform.rotation.y,
+                                         transform.transform.rotation.z,
+                                         transform.transform.rotation.w, ])
+
+            # Calculate and store the homogeneous translation matrix
+            self.individual_transformations[transform.child_frame_id] = self.create_homogeneous_transformation_matrix(
+                translation_vector, rotation_quaternion
+            )
+
+    @staticmethod
+    def create_homogeneous_transformation_matrix(v: array, q: array):
+        """
+        Create a homogeneous transformation matrix from a vertex and a quaternion.
+        """
+
+        # Calculate a rotation matrix from the quaternion
+        r = Rotation.from_quat(q).as_matrix()
+
+        # Assemble the homogeneous transformation matrix
+        return array([
+            [r[0][0], r[0][1], r[0][2], v[0]],
+            [r[1][0], r[1][1], r[1][2], v[1]],
+            [r[2][0], r[2][1], r[2][2], v[2]],
+            [0, 0, 0, 1]
+        ])
+
+    # endregion
+    #############################################################
+
+    def publish_goal_surface_as_transform(self):
+
+        goal_vertex = self.current_trajectory_set_point[0]
+        goal_rotation_matrix = array([self.o_t_ee[0][:3],
+                                      self.o_t_ee[1][:3],
+                                      self.o_t_ee[2][:3],
+                                      ])
+        goal_rotation_quaternion = Rotation.from_matrix(goal_rotation_matrix).as_quat()
+
+        transform_msg = TransformStamped()
+        transform_msg.header.stamp = Time.now()
+        transform_msg.header.frame_id = 'panda_link0'
+        transform_msg.child_frame_id = 'goal_surface'
+        transform_msg.transform.translation.x = goal_vertex[0]
+        transform_msg.transform.translation.y = goal_vertex[1]
+        transform_msg.transform.translation.z = goal_vertex[2]
+        transform_msg.transform.rotation.x = goal_rotation_quaternion[0]
+        transform_msg.transform.rotation.y = goal_rotation_quaternion[1]
+        transform_msg.transform.rotation.z = goal_rotation_quaternion[2]
+        transform_msg.transform.rotation.w = goal_rotation_quaternion[3]
+
+        self.position_goal_transform_publisher.sendTransform(transform_msg)
+
     def main(self) -> None:
         """
         Calculates the correct control input based on the current error in the system and
@@ -411,6 +664,10 @@ class RobotControlNode:
         if self.use_force_feedback_flag:
             control_input_array = control_input_array + self.force_based_control_input
 
+        # Publish the in_use flags
+        self.position_based_controller_use_publisher.publish(Bool(self.use_pose_feedback_flag))
+        self.force_based_controller_use_publisher.publish(Bool(self.use_force_feedback_flag))
+
         # Create a message and fill it with the desired control input
         control_input_message = TwistStamped()
         control_input_message.twist.linear.x = control_input_array[0]
@@ -422,119 +679,26 @@ class RobotControlNode:
 
         self.cartesian_velocity_publisher.publish(control_input_message)
 
-    def create_transformation_from_transform(self, transform: TransformStamped):
+    """def trajectory_goal_reached(self):
+        # If the goal currently published goal has been reached and the current trajectory is not None
+        if self.current_trajectory is not None:
 
-        # Make sure the dictionary exists before trying to use it
-        if self.individual_transformations is not None:
-                
-            # Pull out the translation vector and the rotation quaternion
-            translation_vector = array([transform.transform.translation.x,
-                                        transform.transform.translation.y,
-                                        transform.transform.translation.z])
-            rotation_quaternion = array([transform.transform.rotation.x,
-                                            transform.transform.rotation.y,
-                                            transform.transform.rotation.z,
-                                            transform.transform.rotation.w,])
-            
-            # Calculate and store the homogeneous translation matrix
-            self.individual_transformations[transform.child_frame_id] = self.create_homogeneous_transformation_matrix(
-                translation_vector, rotation_quaternion
-            )
+            # Delete the first coordinate in the trajectory
+            self.current_trajectory = array([self.current_trajectory[0][1:],
+                                             self.current_trajectory[1][1:],
+                                             self.current_trajectory[2][1:],
+                                             ])
 
-            if self.O_T_EE is not None:
-                # Calculate the output based on the current distance to the surface
-                y_lin_output, y_lin_set_point_reached = self.linear_y_controller.calculate_output(
-                    array([self.O_T_EE[0][3], self.O_T_EE[1][3], self.O_T_EE[2][3]])
-                )
+            # If the trajectory is not empty
+            if self.current_trajectory.size > 0:
 
-                # Update the position based control input
-                self.position_based_control_input = [
-                    0,  # x linear is not measured
-                    y_lin_output,  # y linear is measured
-                    0,  # z linear is not measured
-                    0,  # x angular is not measured
-                    0,  # y angular is not measured
-                    0,  # z angular is not measured
-                ]
+                # Generate the new trajectory message
+                self.update_current_trajectory_set_point()
 
-                # Publish if the goal position was reached
-                self.position_goal_reached_publisher.publish(Bool(y_lin_set_point_reached))
-                self.position_error_publisher.publish(Float64(self.linear_y_controller.calculate_current_error(
-                    array([self.O_T_EE[0][3], self.O_T_EE[1][3], self.O_T_EE[2][3]])
-                )))
-
-                # If the set point has been reached, 
-                if y_lin_set_point_reached:
-
-                    # Clear the set point from the controller to avoid race conditions
-                    self.linear_y_controller.update_set_point(None)
-
-    def read_static_transformation_callback(self, data: TFMessage):
-
-        # Pull out single transform
-        transform: TransformStamped = data.transforms[0]
-
-        # Make sure the transformation is from Link 8
-        if transform.child_frame_id == LINK_8:
-            
-            # Add the transformation to the dictionary
-            self.create_transformation_from_transform(transform)
-
-    def create_transformation_callback(self, data: TFMessage):
-
-        # For each transformation sent
-        for transform in data.transforms:
-
-            # Tell python what it is
-            transform: TransformStamped
-
-            # Pull out the name of the transformation
-            transformation_name = transform.child_frame_id
-
-            # Define a variable to count the number of transformation sent
-
-            # If the name matches a key value
-            if transformation_name in self.individual_transformations:
-                
-                # Add the transformation to the dictionary
-                self.create_transformation_from_transform(transform)
-        
-        if len(data.transforms) == 7 and self.individual_transformations[LINK_EE].size > 0:
-            # Define a variable to save the final transformation in
-            O_T_EE = identity(4) 
-
-            # Iteratively calculate the final transformation through the transformation from each link
-            for key in [LINK_1, LINK_2, LINK_3, LINK_4, LINK_5, LINK_6, LINK_7, LINK_8, LINK_EE]:
-                O_T_EE = O_T_EE@self.individual_transformations[key]
-
-            # Save the transformation for local use
-            self.O_T_EE = O_T_EE
-            
-            # Define a new message object for publishing the transformation matrix
-            O_T_EE_msg = Float64MultiArray()
-            O_T_EE_msg.layout.dim.append(MultiArrayDimension)
-            O_T_EE_msg.layout.dim[0].label = 'rows'
-            O_T_EE_msg.layout.dim[0].size = 4
-            O_T_EE_msg.layout.dim[0].stride = 16
-            O_T_EE_msg.layout.dim.append(MultiArrayDimension)
-            O_T_EE_msg.layout.dim[0].label = 'columns'
-            O_T_EE_msg.layout.dim[0].size = 4
-            O_T_EE_msg.layout.dim[0].stride = 4
-            O_T_EE_msg.data = O_T_EE.reshape([16])
-
-            self.end_effector_transformation_publisher.publish(O_T_EE_msg)
-
-    @staticmethod
-    def create_homogeneous_transformation_matrix(v: array, q: array):
-
-        r = Rotation.from_quat(q).as_matrix()
-
-        return array([
-                    [r[0][0], r[0][1], r[0][2], v[0]],
-                    [r[1][0], r[1][1], r[1][2], v[1]],
-                    [r[2][0], r[2][1], r[2][2], v[2]],
-                    [0, 0, 0, 1]
-        ])
+            # Else make both None
+            else:
+                self.current_trajectory = None
+                self.current_trajectory_set_point = None"""
 
 
 class BasicController:
@@ -606,9 +770,9 @@ class BasicController:
                 if output < self.min_output:
                     output = 0
 
-            return output, abs(current_error) <= self.error_tolerance
+            return output, abs(current_error) <= self.error_tolerance, current_error
 
-        return output, False
+        return output, False, 0
 
 
 class Surface:
@@ -670,7 +834,7 @@ class SurfaceController(BasicController):
 
     def calculate_current_error(self, new_reading):
         if self.set_point is not None:
-            return self.set_point.distance_to_surface(new_reading)
+            return -self.set_point.distance_to_surface(new_reading)
 
 
 if __name__ == '__main__':
