@@ -61,8 +61,8 @@ class RobotControlNode:
         self.linear_y_controller = SurfaceController(p_gain=0.300, error_tolerance=0.007,
                                                      d_gain=0.0000,
                                                      i_gain=0.0000)  # y linear, position-based, error = meters
-        self.linear_z_controller = BasicController(p_gain=.025, error_tolerance=0.100,
-                                                   d_gain=.005, i_gain=.0001)  # z linear, force-based, error = Newtons
+        self.linear_z_controller = BasicController(p_gain=.01, error_tolerance=0.100,
+                                                   d_gain=.000, i_gain=.000)  # z linear, force-based, error = Newtons
         self.angular_x_controller = BasicController(p_gain=0.00, error_tolerance=1.000,
                                                     d_gain=0.00, i_gain=0)  # x rotation, not measured, error = degrees
         self.angular_y_controller = BasicController(p_gain=0.10, error_tolerance=0.500,
@@ -234,11 +234,13 @@ class RobotControlNode:
 
         output, set_point_reached, current_error = self.linear_z_controller.calculate_output(self.robot_sensed_force[2])
 
-        # TODO make this motion in the z-axis of the end effector
+        # Transform the output from the end effector frame to the origin frame
+        output_in_o_frame = self.get_rotation_matrix_of_pose()@array([[0], [0], [output]])
+
         self.force_based_control_input = [
-            0,  # x linear is not measured
-            0,  # y linear is not measured
-            -output,  # z linear is measured
+            output_in_o_frame[0][0],  # x linear is not measured
+            output_in_o_frame[1][0],  # y linear is not measured
+            output_in_o_frame[2][0],  # z linear is measured
             0,  # x angular is not measured
             0,  # y angular is not measured
             0,  # z angular is not measured
@@ -253,16 +255,20 @@ class RobotControlNode:
         # Only compute if the pose goal exists
         if self.o_t_ee is not None:
 
+            # TODO Fix this!, trajectories are in X
             # Calculate the output based on the current distance to the surface
             y_lin_output, y_lin_set_point_reached, y_lin_current_error = self.linear_y_controller.calculate_output(
                 array([self.o_t_ee[0][3], self.o_t_ee[1][3], self.o_t_ee[2][3]])
             )
 
+            # Transform the output from the end effector frame to the origin frame
+            y_lin_output_in_o_frame = self.get_rotation_matrix_of_pose() @ array([[y_lin_output], [0], [0]])
+
             # Update the position based control input
             self.position_based_control_input = [
-                0,  # x linear is not measured
-                y_lin_output,  # y linear is measured
-                0,  # z linear is not measured
+                y_lin_output_in_o_frame[0][0],  # x linear is not measured
+                y_lin_output_in_o_frame[1][0],  # y linear is measured
+                y_lin_output_in_o_frame[2][0],  # z linear is not measured
                 0,  # x angular is not measured
                 0,  # y angular is not measured
                 0,  # z angular is not measured
@@ -620,6 +626,18 @@ class RobotControlNode:
             [0, 0, 0, 1]
         ])
 
+    def get_rotation_matrix_of_pose(self):
+        return array([self.o_t_ee[0][:3],
+                      self.o_t_ee[1][:3],
+                      self.o_t_ee[2][:3],
+                      ])
+
+    def get_translation_matrix_of_pose(self):
+        return array([[self.o_t_ee[0][3]],
+                      [self.o_t_ee[0][3]],
+                      [self.o_t_ee[0][3]],
+                      ])
+
     # endregion
     #############################################################
 
@@ -843,7 +861,7 @@ if __name__ == '__main__':
     node = RobotControlNode()
 
     # Set publishing rate
-    publishing_rate = Rate(10)  # hz
+    publishing_rate = Rate(100)  # hz
 
     print("Node initialized. Press ctrl+c to terminate.")
 
