@@ -113,17 +113,13 @@ class RobotControlNode:
 
         # Create control input subscribers
         Subscriber('/control_error/image_based', TwistStamped, self.image_based_control_error_callback)
-        # Subscriber('/franka_state_controller/F_ext', WrenchStamped, self.robot_sensed_force_callback)
-        Subscriber('/franka_state_controller/F_ext', WrenchStamped, print("test_force"))
-        Subscriber('/franka_state_controller/franka_states', FrankaState, self.robot_current_pose_callback)
-        # Subscriber('tf', TFMessage, self.create_transformation_callback)
-        Subscriber('tf', TFMessage, print("test"))
-        # Subscriber('tf_static', TFMessage, self.read_static_transformation_callback)
-        Subscriber('tf_static', TFMessage, print("test2"))
+        Subscriber('/franka_state_controller/F_ext', WrenchStamped, self.robot_sensed_force_callback)
+        # Subscriber('/franka_state_controller/franka_states', FrankaState, self.robot_current_pose_callback)
+        Subscriber('tf', TFMessage, self.create_transformation_callback)
+        Subscriber('tf_static', TFMessage, self.read_static_transformation_callback)
 
         # Create goal state subscribers
-        # Subscriber('/position_control/goal_surface', Float64MultiArray, self.goal_surface_callback)
-        Subscriber('/position_control/goal_surface', Float64MultiArray, print("hi"))
+        Subscriber('/position_control/goal_surface', Float64MultiArray, self.goal_surface_callback)
         Subscriber('/force_control/set_point', Float64, self.force_set_point_callback)
 
         # Create command subscribers
@@ -233,7 +229,8 @@ class RobotControlNode:
         """
         Captures the current pose of the robot from messages sent by the robot controller.
         """
-        if self.O_T_EE is not None:
+        
+        """if self.O_T_EE is not None:
             # Calculate the output based on the current distance to the surface
             y_lin_output, y_lin_set_point_reached = self.linear_y_controller.calculate_output(
                 array([self.O_T_EE[0][3], self.O_T_EE[1][3], self.O_T_EE[2][3]])
@@ -259,7 +256,7 @@ class RobotControlNode:
             if y_lin_set_point_reached:
 
                 # Clear the set point from the controller to avoid race conditions
-                self.linear_y_controller.update_set_point(None)
+                self.linear_y_controller.update_set_point(None)"""
 
             # self.current_pose[0] = data.O_T_EE[3]
             # self.current_pose[1] = data.O_T_EE[7]
@@ -274,7 +271,7 @@ class RobotControlNode:
             # temp_current_pose.pose.position.z = self.current_pose[2]
             # self.current_pose_status_publisher.publish(temp_current_pose)
 
-    def goal_surface_callback(self, data: Float64MultiArray):
+    def goal_surface_callback(self, data: Float64MultiArray) -> None:
         """
         Captures the goal surface sent to the node.
         """
@@ -443,6 +440,34 @@ class RobotControlNode:
             self.individual_transformations[transform.child_frame_id] = self.create_homogeneous_transformation_matrix(
                 translation_vector, rotation_quaternion
             )
+
+            if self.O_T_EE is not None:
+                # Calculate the output based on the current distance to the surface
+                y_lin_output, y_lin_set_point_reached = self.linear_y_controller.calculate_output(
+                    array([self.O_T_EE[0][3], self.O_T_EE[1][3], self.O_T_EE[2][3]])
+                )
+
+                # Update the position based control input
+                self.position_based_control_input = [
+                    0,  # x linear is not measured
+                    y_lin_output,  # y linear is measured
+                    0,  # z linear is not measured
+                    0,  # x angular is not measured
+                    0,  # y angular is not measured
+                    0,  # z angular is not measured
+                ]
+
+                # Publish if the goal position was reached
+                self.position_goal_reached_publisher.publish(Bool(y_lin_set_point_reached))
+                self.position_error_publisher.publish(Float64(self.linear_y_controller.calculate_current_error(
+                    array([self.O_T_EE[0][3], self.O_T_EE[1][3], self.O_T_EE[2][3]])
+                )))
+
+                # If the set point has been reached, 
+                if y_lin_set_point_reached:
+
+                    # Clear the set point from the controller to avoid race conditions
+                    self.linear_y_controller.update_set_point(None)
 
     def read_static_transformation_callback(self, data: TFMessage):
 
@@ -654,7 +679,7 @@ if __name__ == '__main__':
     node = RobotControlNode()
 
     # Set publishing rate
-    publishing_rate = Rate(100)  # hz
+    publishing_rate = Rate(10)  # hz
 
     print("Node initialized. Press ctrl+c to terminate.")
 

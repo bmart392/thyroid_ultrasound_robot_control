@@ -32,6 +32,10 @@ devel_isolated/
 # pycharm stuff
 .idea
 
+# vscode stuff
+.json
+.code-workspace
+
 # qcreator stuff
 CMakeLists.txt.user
 
