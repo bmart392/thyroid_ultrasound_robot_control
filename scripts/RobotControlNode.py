@@ -41,7 +41,6 @@ LINK_7: str = 'panda_link7'
 LINK_8: str = 'panda_link8'
 LINK_EE: str = 'panda_EE'
 
-
 # TODO - High - Verify position error is being properly received
 
 
@@ -55,19 +54,19 @@ class RobotControlNode:
         # Define controller objects for each dimension
         # TODO - High - THESE CONTROLLERS NEED TO BE TUNED
         # TODO - Medium - Build some form of logging of values to aid in tuning
-        self.linear_x_controller = BasicController(p_gain=0.10, error_tolerance=0.003,
-                                                   d_gain=0.05, i_gain=1,
-                                                   set_point=0.)  # x linear, image-based, error = meters
-        self.linear_y_controller = SurfaceController(p_gain=0.300, error_tolerance=0.007,
+        self.linear_x_controller = SurfaceController(p_gain=0.300, error_tolerance=0.007,
                                                      d_gain=0.0000,
-                                                     i_gain=0.0000)  # y linear, position-based, error = meters
+                                                     i_gain=0.0000)  # x linear, position-based, error = meters
+        self.linear_y_controller = BasicController(p_gain=0.01, error_tolerance=0.003,
+                                                   d_gain=0.000, i_gain=.000,
+                                                   set_point=0.)  # y linear, image-based, error = meters
         self.linear_z_controller = BasicController(p_gain=.01, error_tolerance=0.100,
                                                    d_gain=.000, i_gain=.000)  # z linear, force-based, error = Newtons
-        self.angular_x_controller = BasicController(p_gain=0.00, error_tolerance=1.000,
-                                                    d_gain=0.00, i_gain=0)  # x rotation, not measured, error = degrees
-        self.angular_y_controller = BasicController(p_gain=0.10, error_tolerance=0.500,
-                                                    d_gain=0.05, i_gain=1,
-                                                    set_point=0.)  # y rotation, image-based, error = degrees
+        self.angular_x_controller = BasicController(p_gain=0.0001, error_tolerance=0.500,
+                                                    d_gain=0.00, i_gain=0,
+                                                    set_point=0.)  # x rotation, image-based, error = degrees
+        self.angular_y_controller = BasicController(p_gain=0.00, error_tolerance=1.000,
+                                                    d_gain=0.00, i_gain=0)  # y rotation, not measured, error = degrees
         self.angular_z_controller = BasicController(p_gain=0.00, error_tolerance=1.000,
                                                     d_gain=0.00, i_gain=0)  # z rotation, not measured, error = degrees
 
@@ -129,7 +128,7 @@ class RobotControlNode:
         Subscriber('tf_static', TFMessage, self.read_static_transformation_callback)
 
         # Create control input subscribers
-        Subscriber('/control_error/image_based', TwistStamped, self.image_based_control_input_calculation)
+        Subscriber('/image_control/distance_to_centroid', TwistStamped, self.image_based_control_input_calculation)
         Subscriber('/franka_state_controller/F_ext', WrenchStamped, self.robot_force_control_input_calculation)
 
         # Create goal state subscribers
@@ -152,6 +151,8 @@ class RobotControlNode:
         # Create a publisher for displaying the force error
         self.force_based_error_publisher = Publisher('/force_control/error', Float64, queue_size=1)
         self.force_based_controller_use_publisher = Publisher('/force_control/in_use', Bool, queue_size=1)
+        self.force_based_control_input_publisher = Publisher('/force_control/control_input_ee',
+                                                             TwistStamped, queue_size=1)
 
         # Define publishers for displaying information about trajectory following
         self.position_goal_reached_publisher = Publisher('/position_control/goal_reached', Bool, queue_size=1)
@@ -160,6 +161,13 @@ class RobotControlNode:
                                                          Float64MultiArray, queue_size=1)
         self.position_goal_transform_publisher = StaticTransformBroadcaster()
         self.position_based_controller_use_publisher = Publisher('/position_control/in_use', Bool, queue_size=1)
+        self.position_based_control_input_publisher = Publisher('/position_control/control_input_ee',
+                                                                TwistStamped, queue_size=1)
+
+        # Define publishers for displaying information about the image control
+        self.image_based_controller_use_publisher = Publisher('/image_control/in_use', Bool, queue_size=1)
+        self.image_based_control_input_publisher = Publisher('/image_control/control_input_ee',
+                                                             TwistStamped, queue_size=1)
 
         # Create publishers and subscribers to tune the PID controllers
         Subscriber('/tuning/controller', UInt8, self.set_selected_controller_callback)
@@ -175,21 +183,34 @@ class RobotControlNode:
     # region
     def image_based_control_input_calculation(self, data: TwistStamped) -> None:
 
-        x_lin_output, x_lin_set_point_reached, x_lin_current_error = self.linear_x_controller.calculate_output(
+        # Calculate the control input relative to the end effector using the image position error
+        y_lin_output, y_lin_set_point_reached, y_lin_current_error = self.linear_y_controller.calculate_output(
             data.twist.linear.x
         )
-        y_ang_output, y_ang_set_point_reached, y_ang_current_error = self.angular_y_controller.calculate_output(
+        x_ang_output, x_ang_set_point_reached, x_ang_current_error = self.angular_x_controller.calculate_output(
             data.twist.angular.y
         )
 
-        self.image_based_control_input = [
-            x_lin_output,  # x linear is measured
-            0,  # y linear is not measured
-            0,  # z linear is not measured
-            0,  # x angular is not measured
-            y_ang_output,  # y angular is measured
-            0,  # z angular is not measured
-        ]
+        # Publish the control inputs relative to the end effector
+        self.image_based_control_input_publisher.publish(self.create_twist_stamped_from_list([0, y_lin_output, 0,
+                                                                                              x_ang_output, 0, 0]))
+
+        # Ensure that the transformation matrix to the end effector exists before using it
+        if self.o_t_ee is not None:
+
+            # Calculate the control inputs relative to the base frame
+            y_lin_output_in_o_frame = self.get_rotation_matrix_of_pose()@array([[0], [y_lin_output], [0]])
+            x_ang_output_in_o_frame = self.get_rotation_matrix_of_pose()@array([[x_ang_output], [0], [0]])
+
+            # Save the control inputs
+            self.image_based_control_input = [
+                y_lin_output_in_o_frame[0][0],  # x linear
+                y_lin_output_in_o_frame[1][0],  # y linear
+                y_lin_output_in_o_frame[2][0],  # z linear
+                x_ang_output_in_o_frame[0][0],  # x angular
+                x_ang_output_in_o_frame[1][0],  # y angular
+                x_ang_output_in_o_frame[2][0],  # z angular
+            ]
 
     def robot_force_control_input_calculation(self, data: WrenchStamped) -> None:
         """
@@ -206,47 +227,46 @@ class RobotControlNode:
             if len(dimension) >= self.force_history_length:
                 self.force_history[index] = dimension[1:]
 
-        # Add in the new value
-        # self.force_history[0] = append(self.force_history[0], data.wrench.force.x)
-        # self.force_history[1] = append(self.force_history[1], data.wrench.force.y)
+        # Add in the new force value for each dimension
         self.force_history[2] = append(self.force_history[2], data.wrench.force.z)
-        # self.force_history[3] = append(self.force_history[3], data.wrench.torque.x)
-        # self.force_history[4] = append(self.force_history[4], data.wrench.torque.y)
-        # self.force_history[5] = append(self.force_history[5], data.wrench.torque.z)
 
         # Average the force history to find a more consistent force value
-        # self.robot_sensed_force[0] = 0  # mean(self.force_history[0])
-        # self.robot_sensed_force[1] = 0  # mean(self.force_history[1])
         self.robot_sensed_force[2] = round(float(median(self.force_history[2])), 2)
-        # self.robot_sensed_force[3] = 0  # mean(self.force_history[3])
-        # self.robot_sensed_force[4] = 0  # mean(self.force_history[4])
-        # self.robot_sensed_force[5] = 0  # mean(self.force_history[5])
 
+        # Create the message used to send the cleaned force data
         cleaned_force_message = WrenchStamped()
-        # cleaned_force_message.wrench.force.x = self.robot_sensed_force[0]
-        # cleaned_force_message.wrench.force.y = self.robot_sensed_force[1]
-        cleaned_force_message.wrench.force.z = self.robot_sensed_force[2]
-        # cleaned_force_message.wrench.torque.x = self.robot_sensed_force[3]
-        # cleaned_force_message.wrench.torque.y = self.robot_sensed_force[4]
-        # cleaned_force_message.wrench.torque.z = self.robot_sensed_force[5]
 
+        # Assign the necessary fields in the message
+        cleaned_force_message.wrench.force.z = self.robot_sensed_force[2]
+
+        # Publish the cleaned force message
         self.cleaned_force_publisher.publish(cleaned_force_message)
 
-        output, set_point_reached, current_error = self.linear_z_controller.calculate_output(self.robot_sensed_force[2])
+        # Calculate the control output relative to the end effector frame
+        z_lin_output, z_lin_set_point_reached, z_lin_current_error = self.linear_z_controller.calculate_output(
+            self.robot_sensed_force[2]
+        )
 
-        # Transform the output from the end effector frame to the origin frame
-        output_in_o_frame = self.get_rotation_matrix_of_pose()@array([[0], [0], [output]])
+        # Publish the control output relative to the end effector frame
+        self.force_based_control_input_publisher.publish(self.create_twist_stamped_from_list([0, 0, z_lin_output,
+                                                                                              0, 0, 0]))
 
-        self.force_based_control_input = [
-            output_in_o_frame[0][0],  # x linear is not measured
-            output_in_o_frame[1][0],  # y linear is not measured
-            output_in_o_frame[2][0],  # z linear is measured
-            0,  # x angular is not measured
-            0,  # y angular is not measured
-            0,  # z angular is not measured
-        ]
+        # Ensure that the transformation matrix to the end effector exists before using it
+        if self.o_t_ee is not None:
 
-        self.force_based_error_publisher.publish(Float64(current_error))
+            # Transform the output from the end effector frame to the origin frame
+            output_in_o_frame = self.get_rotation_matrix_of_pose()@array([[0], [0], [z_lin_output]])
+
+            self.force_based_control_input = [
+                output_in_o_frame[0][0],  # x linear is not measured
+                output_in_o_frame[1][0],  # y linear is not measured
+                output_in_o_frame[2][0],  # z linear is measured
+                0,  # x angular is not measured
+                0,  # y angular is not measured
+                0,  # z angular is not measured
+            ]
+
+        self.force_based_error_publisher.publish(Float64(z_lin_current_error))
 
     def robot_pose_control_input_calculation(self) -> None:
         """
@@ -255,31 +275,34 @@ class RobotControlNode:
         # Only compute if the pose goal exists
         if self.o_t_ee is not None:
 
-            # TODO Fix this!, trajectories are in X
             # Calculate the output based on the current distance to the surface
-            y_lin_output, y_lin_set_point_reached, y_lin_current_error = self.linear_y_controller.calculate_output(
+            x_lin_output, x_lin_set_point_reached, x_lin_current_error = self.linear_x_controller.calculate_output(
                 array([self.o_t_ee[0][3], self.o_t_ee[1][3], self.o_t_ee[2][3]])
             )
 
+            # Publish the control input relative to the end effector
+            self.position_based_control_input_publisher.publish(self.create_twist_stamped_from_list([x_lin_output, 0, 0,
+                                                                                                     0, 0, 0]))
+
             # Transform the output from the end effector frame to the origin frame
-            y_lin_output_in_o_frame = self.get_rotation_matrix_of_pose() @ array([[y_lin_output], [0], [0]])
+            x_lin_output_in_o_frame = self.get_rotation_matrix_of_pose() @ array([[x_lin_output], [0], [0]])
 
             # Update the position based control input
             self.position_based_control_input = [
-                y_lin_output_in_o_frame[0][0],  # x linear is not measured
-                y_lin_output_in_o_frame[1][0],  # y linear is measured
-                y_lin_output_in_o_frame[2][0],  # z linear is not measured
-                0,  # x angular is not measured
-                0,  # y angular is not measured
-                0,  # z angular is not measured
+                x_lin_output_in_o_frame[0][0],  # x linear
+                x_lin_output_in_o_frame[1][0],  # y linear
+                x_lin_output_in_o_frame[2][0],  # z linear
+                0,  # x angular
+                0,  # y angular
+                0,  # z angular
             ]
 
             # Publish if the goal position was reached
-            self.position_goal_reached_publisher.publish(Bool(y_lin_set_point_reached))
-            self.position_error_publisher.publish(Float64(y_lin_current_error))
+            self.position_goal_reached_publisher.publish(Bool(x_lin_set_point_reached))
+            self.position_error_publisher.publish(Float64(x_lin_current_error))
 
             # If the set point has been reached,
-            if y_lin_set_point_reached:
+            if x_lin_set_point_reached:
                 # Delete the first coordinate in the trajectory
                 self.current_trajectory = array([self.current_trajectory[0][1:],
                                                  self.current_trajectory[1][1:],
@@ -340,7 +363,7 @@ class RobotControlNode:
             self.position_goal_surface_publisher.publish(current_trajectory_set_point_message)
 
             # Create a new surface based on the given vertices and set that surface as the set-point for the controller
-            self.linear_y_controller.update_set_point(
+            self.linear_x_controller.update_set_point(
                 Surface(self.current_trajectory_set_point)
             )
 
@@ -351,7 +374,7 @@ class RobotControlNode:
         else:
             self.current_trajectory = None
             self.current_trajectory_set_point = None
-            self.linear_y_controller.update_set_point(None)
+            self.linear_x_controller.update_set_point(None)
 
     # endregion
     ####################
@@ -664,6 +687,22 @@ class RobotControlNode:
 
         self.position_goal_transform_publisher.sendTransform(transform_msg)
 
+    @staticmethod
+    def create_twist_stamped_from_list(input_array: list):
+
+        # Create the new message
+        new_msg = TwistStamped()
+
+        # Assign the fields appropriately
+        new_msg.twist.linear.x = input_array[0]
+        new_msg.twist.linear.y = input_array[1]
+        new_msg.twist.linear.z = input_array[2]
+        new_msg.twist.angular.x = input_array[3]
+        new_msg.twist.angular.y = input_array[4]
+        new_msg.twist.angular.z = input_array[5]
+
+        return new_msg
+
     def main(self) -> None:
         """
         Calculates the correct control input based on the current error in the system and
@@ -685,6 +724,7 @@ class RobotControlNode:
         # Publish the in_use flags
         self.position_based_controller_use_publisher.publish(Bool(self.use_pose_feedback_flag))
         self.force_based_controller_use_publisher.publish(Bool(self.use_force_feedback_flag))
+        self.image_based_controller_use_publisher.publish(Bool(self.use_image_feedback_flag))
 
         # Create a message and fill it with the desired control input
         control_input_message = TwistStamped()
