@@ -5,48 +5,36 @@ File containing the RobotControlNode class.
 """
 
 # Import standard ros packages
-from rospy import is_shutdown, init_node, Rate, Publisher, Subscriber, Time
-from geometry_msgs.msg import TwistStamped, WrenchStamped, TransformStamped, Transform
-from tf import TransformBroadcaster
+from rospy import Time
+from geometry_msgs.msg import TwistStamped, WrenchStamped, TransformStamped
 from tf2_ros import StaticTransformBroadcaster
 from tf2_msgs.msg import TFMessage
-from franka_msgs.msg import FrankaState
 from std_msgs.msg import Float64, Bool, UInt8, Float64MultiArray, MultiArrayDimension
 
 # Import standard packages
-from numpy import zeros, array, median, append, arange, delete, sum, dot, sqrt, cross, identity, linspace
+from numpy import zeros, array, median, append, arange, identity, linspace
 from copy import copy
 from scipy.spatial.transform import Rotation
 
-# Define constants for each controller and controller channel
-P_GAIN: int = int(0)
-I_GAIN: int = int(1)
-D_GAIN: int = int(2)
+# Import custom ROS packages
+from thyroid_ultrasound_support.BasicNode import *
+from thyroid_ultrasound_support.TopicNames import *
+from thyroid_ultrasound_messages.msg import Float64MultiArrayStamped
 
-X_LINEAR_CONTROLLER: int = int(0)
-Y_LINEAR_CONTROLLER: int = int(1)
-Z_LINEAR_CONTROLLER: int = int(2)
-X_ANGULAR_CONTROLLER: int = int(3)
-Y_ANGULAR_CONTROLLER: int = int(4)
-Z_ANGULAR_CONTROLLER: int = int(5)
-
-# Define constants for the names of each link transformation
-LINK_1: str = 'panda_link1'
-LINK_2: str = 'panda_link2'
-LINK_3: str = 'panda_link3'
-LINK_4: str = 'panda_link4'
-LINK_5: str = 'panda_link5'
-LINK_6: str = 'panda_link6'
-LINK_7: str = 'panda_link7'
-LINK_8: str = 'panda_link8'
-LINK_EE: str = 'panda_EE'
-
-# TODO - High - Verify position error is being properly received
+# Import custom python packages
+from thyroid_ultrasound_robot_control_support.RobotConstants import *
+from thyroid_ultrasound_robot_control_support.ControllerConstants import *
+from thyroid_ultrasound_robot_control_support.BasicController import BasicController
+from thyroid_ultrasound_robot_control_support.SurfaceController import SurfaceController
+from thyroid_ultrasound_robot_control_support.Surface import Surface
 
 
-class RobotControlNode:
+class RobotControlNode(BasicNode):
 
     def __init__(self) -> None:
+
+        # Add call to super class init
+        super().__init__()
 
         # Define flag to know when the image is centered
         self.is_image_centered = False
@@ -62,7 +50,7 @@ class RobotControlNode:
                                                    set_point=0.)  # y linear, image-based, error = meters
         self.linear_z_controller = BasicController(p_gain=.01, error_tolerance=0.100,
                                                    d_gain=.000, i_gain=.000)  # z linear, force-based, error = Newtons
-        self.angular_x_controller = BasicController(p_gain=0.0001, error_tolerance=0.500,
+        self.angular_x_controller = BasicController(p_gain=0.02, error_tolerance=0.100,
                                                     d_gain=0.00, i_gain=0,
                                                     set_point=0.)  # x rotation, image-based, error = degrees
         self.angular_y_controller = BasicController(p_gain=0.00, error_tolerance=1.000,
@@ -142,7 +130,7 @@ class RobotControlNode:
         Subscriber('/command/clear_trajectory', Bool, self.clear_trajectory_command_callback)
 
         # Define publishers for robot information
-        self.end_effector_transformation_publisher = Publisher('/O_T_EE', Float64MultiArray, queue_size=1)
+        self.end_effector_transformation_publisher = Publisher(ROBOT_POSE, Float64MultiArrayStamped, queue_size=1)
         self.cleaned_force_publisher = Publisher('/force_control/sensed_force_cleaned', WrenchStamped, queue_size=1)
 
         # Create robot cartesian velocity publisher
@@ -187,29 +175,25 @@ class RobotControlNode:
         y_lin_output, y_lin_set_point_reached, y_lin_current_error = self.linear_y_controller.calculate_output(
             data.twist.linear.x
         )
-        x_ang_output, x_ang_set_point_reached, x_ang_current_error = self.angular_x_controller.calculate_output(
-            data.twist.angular.y
-        )
 
         # Publish the control inputs relative to the end effector
         self.image_based_control_input_publisher.publish(self.create_twist_stamped_from_list([0, y_lin_output, 0,
-                                                                                              x_ang_output, 0, 0]))
+                                                                                              0, 0, 0]))
 
         # Ensure that the transformation matrix to the end effector exists before using it
         if self.o_t_ee is not None:
 
             # Calculate the control inputs relative to the base frame
             y_lin_output_in_o_frame = self.get_rotation_matrix_of_pose()@array([[0], [y_lin_output], [0]])
-            x_ang_output_in_o_frame = self.get_rotation_matrix_of_pose()@array([[x_ang_output], [0], [0]])
 
             # Save the control inputs
             self.image_based_control_input = [
-                y_lin_output_in_o_frame[0][0],  # x linear
-                y_lin_output_in_o_frame[1][0],  # y linear
-                y_lin_output_in_o_frame[2][0],  # z linear
-                x_ang_output_in_o_frame[0][0],  # x angular
-                x_ang_output_in_o_frame[1][0],  # y angular
-                x_ang_output_in_o_frame[2][0],  # z angular
+                y_lin_output_in_o_frame[0][0],  # x linear in end effector frame
+                y_lin_output_in_o_frame[1][0],  # y linear in end effector frame
+                y_lin_output_in_o_frame[2][0],  # z linear in end effector frame
+                0,  # x angular in end effector frame
+                0,  # y angular in end effector frame
+                0,  # z angular in end effector frame
             ]
 
     def robot_force_control_input_calculation(self, data: WrenchStamped) -> None:
@@ -229,15 +213,18 @@ class RobotControlNode:
 
         # Add in the new force value for each dimension
         self.force_history[2] = append(self.force_history[2], data.wrench.force.z)
+        self.force_history[3] = append(self.force_history[3], data.wrench.torque.x)
 
         # Average the force history to find a more consistent force value
         self.robot_sensed_force[2] = round(float(median(self.force_history[2])), 2)
+        self.robot_sensed_force[3] = round(float(median(self.force_history[3])), 2)
 
         # Create the message used to send the cleaned force data
         cleaned_force_message = WrenchStamped()
 
         # Assign the necessary fields in the message
         cleaned_force_message.wrench.force.z = self.robot_sensed_force[2]
+        cleaned_force_message.wrench.torque.x = self.robot_sensed_force[3]
 
         # Publish the cleaned force message
         self.cleaned_force_publisher.publish(cleaned_force_message)
@@ -247,23 +234,28 @@ class RobotControlNode:
             self.robot_sensed_force[2]
         )
 
+        x_ang_output, x_ang_set_point_reached, x_ang_current_error = self.angular_x_controller.calculate_output(
+            self.robot_sensed_force[3]
+        )
+
         # Publish the control output relative to the end effector frame
         self.force_based_control_input_publisher.publish(self.create_twist_stamped_from_list([0, 0, z_lin_output,
-                                                                                              0, 0, 0]))
+                                                                                              x_ang_output, 0, 0]))
 
         # Ensure that the transformation matrix to the end effector exists before using it
         if self.o_t_ee is not None:
 
             # Transform the output from the end effector frame to the origin frame
-            output_in_o_frame = self.get_rotation_matrix_of_pose()@array([[0], [0], [z_lin_output]])
+            lin_output_in_o_frame = self.get_rotation_matrix_of_pose()@array([[0], [0], [z_lin_output]])
+            ang_output_in_o_frame = self.get_rotation_matrix_of_pose()@array([[x_ang_output], [0], [0]])
 
             self.force_based_control_input = [
-                output_in_o_frame[0][0],  # x linear is not measured
-                output_in_o_frame[1][0],  # y linear is not measured
-                output_in_o_frame[2][0],  # z linear is measured
-                0,  # x angular is not measured
-                0,  # y angular is not measured
-                0,  # z angular is not measured
+                lin_output_in_o_frame[0][0],  # x linear in end effector frame
+                lin_output_in_o_frame[1][0],  # y linear in end effector frame
+                lin_output_in_o_frame[2][0],  # z linear in end effector frame
+                ang_output_in_o_frame[0][0],  # x angular in end effector frame
+                ang_output_in_o_frame[1][0],  # y angular in end effector frame
+                ang_output_in_o_frame[2][0],  # z angular in end effector frame
             ]
 
         self.force_based_error_publisher.publish(Float64(z_lin_current_error))
@@ -594,16 +586,17 @@ class RobotControlNode:
             self.o_t_ee = o_t_ee
 
             # Define a new message object for publishing the transformation matrix
-            o_t_ee_msg = Float64MultiArray()
-            o_t_ee_msg.layout.dim.append(MultiArrayDimension)
-            o_t_ee_msg.layout.dim[0].label = 'rows'
-            o_t_ee_msg.layout.dim[0].size = 4
-            o_t_ee_msg.layout.dim[0].stride = 16
-            o_t_ee_msg.layout.dim.append(MultiArrayDimension)
-            o_t_ee_msg.layout.dim[0].label = 'columns'
-            o_t_ee_msg.layout.dim[0].size = 4
-            o_t_ee_msg.layout.dim[0].stride = 4
-            o_t_ee_msg.data = o_t_ee.reshape([16])
+            o_t_ee_msg = Float64MultiArrayStamped()
+            o_t_ee_msg.header.stamp = data.transforms[0].header.stamp
+            o_t_ee_msg.data.layout.dim.append(MultiArrayDimension)
+            o_t_ee_msg.data.layout.dim[0].label = 'rows'
+            o_t_ee_msg.data.layout.dim[0].size = 4
+            o_t_ee_msg.data.layout.dim[0].stride = 16
+            o_t_ee_msg.data.layout.dim.append(MultiArrayDimension)
+            o_t_ee_msg.data.layout.dim[0].label = 'columns'
+            o_t_ee_msg.data.layout.dim[0].size = 4
+            o_t_ee_msg.data.layout.dim[0].stride = 4
+            o_t_ee_msg.data.data = o_t_ee.reshape([16])
 
             self.end_effector_transformation_publisher.publish(o_t_ee_msg)
 
@@ -758,141 +751,6 @@ class RobotControlNode:
                 self.current_trajectory = None
                 self.current_trajectory_set_point = None"""
 
-
-class BasicController:
-
-    def __init__(self, p_gain: float, error_tolerance: float,
-                 d_gain: float = None, i_gain: float = None,
-                 set_point=None, min_output: float = None):
-
-        self.error_history_length = 15
-        self.error_history = array([])
-
-        self.p_gain = p_gain
-        self.d_gain = d_gain
-        self.i_gain = i_gain
-
-        self.set_point = set_point
-        self.min_output = min_output
-
-        self.error_tolerance = error_tolerance
-
-    def update_set_point(self, new_set_point) -> None:
-        self.set_point = new_set_point
-
-    def set_gain(self, channel_selector: int, new_gain_value: float):
-
-        if channel_selector == P_GAIN:
-            self.p_gain = new_gain_value
-        elif channel_selector == I_GAIN:
-            self.i_gain = new_gain_value
-        elif channel_selector == D_GAIN:
-            self.d_gain = new_gain_value
-        else:
-            raise Exception("Incorrect channel selected.")
-
-    def calculate_current_error(self, new_reading):
-        """
-        Calculates the current error based on the new reading.
-        """
-        return self.set_point - new_reading
-
-    def calculate_output(self, new_reading):
-
-        output = 0.
-
-        if self.set_point is not None:
-
-            # Calculate the current error
-            current_error = self.calculate_current_error(new_reading)
-
-            # Calculate the output based on the proportional gain
-            output = output + (self.p_gain * current_error)
-
-            if len(self.error_history) > 0 and self.p_gain is not None:
-                # Calculate the output based on the derivative gain
-                output = output + (self.d_gain * (current_error - self.error_history[-1]))
-
-            if len(self.error_history) > 1 and self.i_gain is not None:
-                # Calculate the output based on the integral gain
-                output = output + (self.i_gain * sum(self.error_history))
-
-            # Update the error history with the new error
-            self.error_history = append(self.error_history, current_error)
-
-            # Make sure that the error history is not too long
-            if len(self.error_history) > self.error_history_length:
-                self.error_history = delete(self.error_history, 0)
-
-            if self.min_output is not None:
-                if output < self.min_output:
-                    output = 0
-
-            return output, abs(current_error) <= self.error_tolerance, current_error
-
-        return output, False, 0
-
-
-class Surface:
-
-    def __init__(self, defining_points: array):
-        """
-        Create a new surface using the two vector approach.
-
-        Parameters
-        ----------
-        defining_points
-            An array of 3 points representing the origin point of the surface and two vectors that lie on the surface
-        """
-
-        # Define the point on the plane as the first point given
-        self.point_on_plane = defining_points[0]
-
-        # Calculate the vector between the origin point and the second point
-        vector_1 = defining_points[1] - defining_points[0]
-
-        # Calculate the vector between the origin point and the second point
-        vector_2 = defining_points[2] - defining_points[0]
-
-        # Calculate the normal vector of the surface
-        normal_vector = cross(vector_1, vector_2)
-
-        # Transform the normal vector to a unit normal vector
-        self.unit_normal_vector = normal_vector / self.vector_magnitude(normal_vector)
-
-    def distance_to_surface(self, point_to_check: array):
-        """
-        Calculate the distance to the surface from a given point.
-
-        Parameters
-        ----------
-        point_to_check
-            An array representing an x, y, z coordinate that is some distance away from the surface.
-        """
-
-        # Calculate the distance to the surface using the dot product
-        return dot(self.unit_normal_vector, point_to_check - self.point_on_plane)
-
-    @staticmethod
-    def vector_magnitude(vector: array):
-        """
-        Calculate the magnitude of the given vector.
-        """
-        return sqrt(sum(vector ** 2))
-
-
-class SurfaceController(BasicController):
-
-    def __init__(self, p_gain: float, error_tolerance: float,
-                 d_gain: float = None, i_gain: float = None,
-                 set_point: Surface = None, min_output: float = None):
-        super().__init__(p_gain, error_tolerance,
-                         d_gain=d_gain, i_gain=i_gain,
-                         set_point=set_point, min_output=min_output)
-
-    def calculate_current_error(self, new_reading):
-        if self.set_point is not None:
-            return -self.set_point.distance_to_surface(new_reading)
 
 
 if __name__ == '__main__':
