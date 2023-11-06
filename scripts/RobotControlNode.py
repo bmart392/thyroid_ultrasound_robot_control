@@ -42,6 +42,7 @@ class RobotControlNode(BasicNode):
         # Define controller objects for each dimension
         # TODO - High - THESE CONTROLLERS NEED TO BE TUNED
         # TODO - Medium - Build some form of logging of values to aid in tuning
+        # TODO - High - Add logic to prevent force control from occurring if the patient is not in view in the ultrasound image
         self.linear_x_controller = SurfaceController(p_gain=0.300, error_tolerance=0.007,
                                                      d_gain=0.0000,
                                                      i_gain=0.0000)  # x linear, position-based, error = meters
@@ -111,24 +112,6 @@ class RobotControlNode(BasicNode):
         # Initialize the node
         init_node('RobotControlNode')
 
-        # Create transform subscribers to calculate the current robot pose
-        Subscriber('tf', TFMessage, self.create_transformation_callback)
-        Subscriber('tf_static', TFMessage, self.read_static_transformation_callback)
-
-        # Create control input subscribers
-        Subscriber('/image_control/distance_to_centroid', TwistStamped, self.image_based_control_input_calculation)
-        Subscriber('/franka_state_controller/F_ext', WrenchStamped, self.robot_force_control_input_calculation)
-
-        # Create goal state subscribers
-        Subscriber('/force_control/set_point', Float64, self.force_set_point_callback)
-
-        # Create command subscribers
-        Subscriber('/command/use_image_feedback', Bool, self.use_image_feedback_command_callback)
-        Subscriber('/command/use_pose_feedback', Bool, self.use_pose_feedback_command_callback)
-        Subscriber('/command/use_force_feedback', Bool, self.use_force_feedback_command_callback)
-        Subscriber('/command/create_trajectory', Float64, self.create_trajectory_command_callback)
-        Subscriber('/command/clear_trajectory', Bool, self.clear_trajectory_command_callback)
-
         # Define publishers for robot information
         self.end_effector_transformation_publisher = Publisher(ROBOT_POSE, Float64MultiArrayStamped, queue_size=1)
         self.cleaned_force_publisher = Publisher('/force_control/sensed_force_cleaned', WrenchStamped, queue_size=1)
@@ -156,6 +139,24 @@ class RobotControlNode(BasicNode):
         self.image_based_controller_use_publisher = Publisher('/image_control/in_use', Bool, queue_size=1)
         self.image_based_control_input_publisher = Publisher('/image_control/control_input_ee',
                                                              TwistStamped, queue_size=1)
+
+        # Create transform subscribers to calculate the current robot pose
+        Subscriber('tf', TFMessage, self.create_transformation_callback)
+        Subscriber('tf_static', TFMessage, self.read_static_transformation_callback)
+
+        # Create control input subscribers
+        Subscriber('/image_control/distance_to_centroid', TwistStamped, self.image_based_control_input_calculation)
+        Subscriber('/franka_state_controller/F_ext', WrenchStamped, self.robot_force_control_input_calculation)
+
+        # Create goal state subscribers
+        Subscriber('/force_control/set_point', Float64, self.force_set_point_callback)
+
+        # Create command subscribers
+        Subscriber('/command/use_image_feedback', Bool, self.use_image_feedback_command_callback)
+        Subscriber('/command/use_pose_feedback', Bool, self.use_pose_feedback_command_callback)
+        Subscriber('/command/use_force_feedback', Bool, self.use_force_feedback_command_callback)
+        Subscriber('/command/create_trajectory', Float64, self.create_trajectory_command_callback)
+        Subscriber('/command/clear_trajectory', Bool, self.clear_trajectory_command_callback)
 
         # Create publishers and subscribers to tune the PID controllers
         Subscriber('/tuning/controller', UInt8, self.set_selected_controller_callback)
