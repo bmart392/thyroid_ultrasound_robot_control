@@ -8,20 +8,19 @@ File containing the RobotControlNode class.
 from rospy import Time
 from geometry_msgs.msg import TwistStamped, WrenchStamped, TransformStamped
 from tf2_ros import StaticTransformBroadcaster
-from tf2_msgs.msg import TFMessage
 from std_msgs.msg import Float64, Bool, UInt8, Float64MultiArray, MultiArrayDimension
 
 # Import standard packages
-from numpy import zeros, array, median, append, arange, identity, linspace
+from numpy import zeros, array, median, append, arange, linspace
 from copy import copy
 from scipy.spatial.transform import Rotation
 
 # Import custom ROS packages
-from thyroid_ultrasound_support.BasicNode import *
-from thyroid_ultrasound_support.TopicNames import *
-from thyroid_ultrasound_messages.msg import Float64MultiArrayStamped
+from thyroid_ultrasound_messages.msg import Float64MultiArrayStamped, Float64Stamped, RegisteredData
 
 # Import custom python packages
+from thyroid_ultrasound_support.BasicNode import *
+from thyroid_ultrasound_support.TopicNames import *
 from thyroid_ultrasound_robot_control_support.RobotConstants import *
 from thyroid_ultrasound_robot_control_support.ControllerConstants import *
 from thyroid_ultrasound_robot_control_support.BasicController import BasicController
@@ -36,17 +35,19 @@ class RobotControlNode(BasicNode):
         # Add call to super class init
         super().__init__()
 
+        # Define the max speed allowed for any linear control input
+        self.lin_max_speed = 0.2  # m/s
+        self.ang_max_speed = 0.01  # rad/s
+
         # Define flag to know when the image is centered
         self.is_image_centered = False
 
         # Define controller objects for each dimension
         # TODO - High - THESE CONTROLLERS NEED TO BE TUNED
-        # TODO - Medium - Build some form of logging of values to aid in tuning
-        # TODO - High - Add logic to prevent force control from occurring if the patient is not in view in the ultrasound image
         self.linear_x_controller = SurfaceController(p_gain=0.300, error_tolerance=0.007,
                                                      d_gain=0.0000,
                                                      i_gain=0.0000)  # x linear, position-based, error = meters
-        self.linear_y_controller = BasicController(p_gain=0.01, error_tolerance=0.003,
+        self.linear_y_controller = BasicController(p_gain=0.1, error_tolerance=0.0002,
                                                    d_gain=0.000, i_gain=.000,
                                                    set_point=0.)  # y linear, image-based, error = meters
         self.linear_z_controller = BasicController(p_gain=.01, error_tolerance=0.100,
@@ -109,63 +110,70 @@ class RobotControlNode(BasicNode):
         # Define a variable to store the current trajectory set point
         self.current_trajectory_set_point = None
 
+        # Define a variable to store if the current set-point has been reached
+        self.current_trajectory_set_point_reached = False
+
+        # Define a variable to store if a registered data set has been produced
+        self.has_data_been_registered = False
+
+        # Define a variable to store if the robot is currently in contact with the patient
+        self.in_contact_with_patient = False
+
         # Initialize the node
         init_node('RobotControlNode')
 
-        # Define publishers for robot information
-        self.end_effector_transformation_publisher = Publisher(ROBOT_POSE, Float64MultiArrayStamped, queue_size=1)
-        self.cleaned_force_publisher = Publisher('/force_control/sensed_force_cleaned', WrenchStamped, queue_size=1)
+        # Define publisher for cleaned force
+        self.cleaned_force_publisher = Publisher(ROBOT_DERIVED_FORCE, WrenchStamped, queue_size=1)
 
         # Create robot cartesian velocity publisher
-        self.cartesian_velocity_publisher = Publisher('/arm/cartesian/velocity', TwistStamped, queue_size=1)
+        self.cartesian_velocity_publisher = Publisher(ROBOT_CONTROL_INPUT, TwistStamped, queue_size=1)
 
         # Create a publisher for displaying the force error
-        self.force_based_error_publisher = Publisher('/force_control/error', Float64, queue_size=1)
-        self.force_based_controller_use_publisher = Publisher('/force_control/in_use', Bool, queue_size=1)
-        self.force_based_control_input_publisher = Publisher('/force_control/control_input_ee',
-                                                             TwistStamped, queue_size=1)
+        self.force_based_error_publisher = Publisher(RC_FORCE_ERROR, Float64, queue_size=1)
+        self.force_based_controller_use_publisher = Publisher(RC_FORCE_IN_USE, Bool, queue_size=1)
+        self.force_based_control_input_publisher = Publisher(RC_FORCE_CONTROL_INPUT_EE, TwistStamped, queue_size=1)
 
         # Define publishers for displaying information about trajectory following
-        self.position_goal_reached_publisher = Publisher('/position_control/goal_reached', Bool, queue_size=1)
-        self.position_error_publisher = Publisher('/position_control/error', Float64, queue_size=1)
-        self.position_goal_surface_publisher = Publisher('/position_control/goal_surface',
-                                                         Float64MultiArray, queue_size=1)
+        self.position_goal_reached_publisher = Publisher(RC_POSITION_GOAL_REACHED, Bool, queue_size=1)
+        self.position_error_publisher = Publisher(RC_POSITION_ERROR, Float64Stamped, queue_size=1)
+        self.position_goal_surface_publisher = Publisher(RC_POSITION_GOAL_SURFACE, Float64MultiArray, queue_size=1)
         self.position_goal_transform_publisher = StaticTransformBroadcaster()
-        self.position_based_controller_use_publisher = Publisher('/position_control/in_use', Bool, queue_size=1)
-        self.position_based_control_input_publisher = Publisher('/position_control/control_input_ee',
-                                                                TwistStamped, queue_size=1)
+        self.position_based_controller_use_publisher = Publisher(RC_POSITION_IN_USE, Bool, queue_size=1)
+        self.position_based_control_input_publisher = Publisher(RC_POSITION_CONTROL_INPUT_EE, TwistStamped,
+                                                                queue_size=1)
 
         # Define publishers for displaying information about the image control
-        self.image_based_controller_use_publisher = Publisher('/image_control/in_use', Bool, queue_size=1)
-        self.image_based_control_input_publisher = Publisher('/image_control/control_input_ee',
-                                                             TwistStamped, queue_size=1)
-
-        # Create transform subscribers to calculate the current robot pose
-        Subscriber('tf', TFMessage, self.create_transformation_callback)
-        Subscriber('tf_static', TFMessage, self.read_static_transformation_callback)
+        self.image_based_controller_use_publisher = Publisher(RC_IMAGE_IN_USE, Bool, queue_size=1)
+        self.image_based_control_input_publisher = Publisher(RC_IMAGE_CONTROL_INPUT_EE, TwistStamped, queue_size=1)
 
         # Create control input subscribers
-        Subscriber('/image_control/distance_to_centroid', TwistStamped, self.image_based_control_input_calculation)
-        Subscriber('/franka_state_controller/F_ext', WrenchStamped, self.robot_force_control_input_calculation)
+        Subscriber(RC_IMAGE_ERROR, TwistStamped, self.image_based_control_input_calculation)
+        Subscriber(ROBOT_FORCE, WrenchStamped, self.robot_force_control_input_calculation)
 
         # Create goal state subscribers
-        Subscriber('/force_control/set_point', Float64, self.force_set_point_callback)
+        Subscriber(RC_FORCE_SET_POINT, Float64, self.force_set_point_callback)
 
         # Create command subscribers
-        Subscriber('/command/use_image_feedback', Bool, self.use_image_feedback_command_callback)
-        Subscriber('/command/use_pose_feedback', Bool, self.use_pose_feedback_command_callback)
-        Subscriber('/command/use_force_feedback', Bool, self.use_force_feedback_command_callback)
-        Subscriber('/command/create_trajectory', Float64, self.create_trajectory_command_callback)
-        Subscriber('/command/clear_trajectory', Bool, self.clear_trajectory_command_callback)
+        Subscriber(USE_IMAGE_FEEDBACK, Bool, self.use_image_feedback_command_callback)
+        Subscriber(USE_POSE_FEEDBACK, Bool, self.use_pose_feedback_command_callback)
+        Subscriber(USE_FORCE_FEEDBACK, Bool, self.use_force_feedback_command_callback)
+        Subscriber(CREATE_TRAJECTORY, Float64, self.create_trajectory_command_callback)
+        Subscriber(CLEAR_TRAJECTORY, Bool, self.clear_trajectory_command_callback)
+
+        Subscriber(REGISTERED_DATA, RegisteredData, self.registered_data_received_callback)
+
+        Subscriber(ROBOT_DERIVED_POSE, Float64MultiArrayStamped, self.robot_pose_callback)
+
+        Subscriber(IS_IMAGE_EMPTY, Bool, self.image_based_patient_contact_callback)
 
         # Create publishers and subscribers to tune the PID controllers
-        Subscriber('/tuning/controller', UInt8, self.set_selected_controller_callback)
-        Subscriber('/tuning/setting/p_gain', Float64, self.set_p_gain_callback)
-        Subscriber('/tuning/setting/i_gain', Float64, self.set_i_gain_callback)
-        Subscriber('/tuning/setting/d_gain', Float64, self.set_d_gain_callback)
-        self.p_gain_publisher = Publisher('/tuning/current/p_gain', Float64, queue_size=1)
-        self.i_gain_publisher = Publisher('/tuning/current/i_gain', Float64, queue_size=1)
-        self.d_gain_publisher = Publisher('/tuning/current/d_gain', Float64, queue_size=1)
+        Subscriber(CONTROLLER_SELECTOR, UInt8, self.set_selected_controller_callback)
+        Subscriber(P_GAIN_SETTING, Float64, self.set_p_gain_callback)
+        Subscriber(I_GAIN_SETTING, Float64, self.set_i_gain_callback)
+        Subscriber(D_GAIN_SETTING, Float64, self.set_d_gain_callback)
+        self.p_gain_publisher = Publisher(P_GAIN_CURRENT, Float64, queue_size=1)
+        self.i_gain_publisher = Publisher(I_GAIN_CURRENT, Float64, queue_size=1)
+        self.d_gain_publisher = Publisher(D_GAIN_CURRENT, Float64, queue_size=1)
 
     ##########################
     # Calculate control inputs
@@ -183,9 +191,8 @@ class RobotControlNode(BasicNode):
 
         # Ensure that the transformation matrix to the end effector exists before using it
         if self.o_t_ee is not None:
-
             # Calculate the control inputs relative to the base frame
-            y_lin_output_in_o_frame = self.get_rotation_matrix_of_pose()@array([[0], [y_lin_output], [0]])
+            y_lin_output_in_o_frame = self.get_rotation_matrix_of_pose() @ array([[0], [y_lin_output], [0]])
 
             # Save the control inputs
             self.image_based_control_input = [
@@ -223,6 +230,9 @@ class RobotControlNode(BasicNode):
         # Create the message used to send the cleaned force data
         cleaned_force_message = WrenchStamped()
 
+        # Add the time stamp to the cleaned force data
+        cleaned_force_message.header.stamp = Time.now()
+
         # Assign the necessary fields in the message
         cleaned_force_message.wrench.force.z = self.robot_sensed_force[2]
         cleaned_force_message.wrench.torque.x = self.robot_sensed_force[3]
@@ -230,36 +240,43 @@ class RobotControlNode(BasicNode):
         # Publish the cleaned force message
         self.cleaned_force_publisher.publish(cleaned_force_message)
 
-        # Calculate the control output relative to the end effector frame
-        z_lin_output, z_lin_set_point_reached, z_lin_current_error = self.linear_z_controller.calculate_output(
-            self.robot_sensed_force[2]
-        )
+        # If the robot is currently contacting the patient,
+        if self.in_contact_with_patient:
 
-        x_ang_output, x_ang_set_point_reached, x_ang_current_error = self.angular_x_controller.calculate_output(
-            self.robot_sensed_force[3]
-        )
+            # Calculate the control output relative to the end effector frame
+            z_lin_input, z_lin_set_point_reached, z_lin_current_error = self.linear_z_controller.calculate_output(
+                self.robot_sensed_force[2]
+            )
+            x_ang_input, x_ang_set_point_reached, x_ang_current_error = self.angular_x_controller.calculate_output(
+                self.robot_sensed_force[3]
+            )
 
-        # Publish the control output relative to the end effector frame
-        self.force_based_control_input_publisher.publish(self.create_twist_stamped_from_list([0, 0, z_lin_output,
-                                                                                              x_ang_output, 0, 0]))
+            # Publish the control output relative to the end effector frame
+            self.force_based_control_input_publisher.publish(self.create_twist_stamped_from_list([0, 0, z_lin_input,
+                                                                                                  x_ang_input, 0, 0]))
 
-        # Ensure that the transformation matrix to the end effector exists before using it
-        if self.o_t_ee is not None:
+            # Ensure that the transformation matrix to the end effector exists before using it
+            if self.o_t_ee is not None:
+                # Transform the output from the end effector frame to the origin frame
+                lin_input_in_o_frame = self.get_rotation_matrix_of_pose() @ array([[0], [0], [z_lin_input]])
+                ang_input_in_o_frame = self.get_rotation_matrix_of_pose() @ array([[x_ang_input], [0], [0]])
 
-            # Transform the output from the end effector frame to the origin frame
-            lin_output_in_o_frame = self.get_rotation_matrix_of_pose()@array([[0], [0], [z_lin_output]])
-            ang_output_in_o_frame = self.get_rotation_matrix_of_pose()@array([[x_ang_output], [0], [0]])
+                # Save the control inputs for use in the main loop
+                self.force_based_control_input = [
+                    lin_input_in_o_frame[0][0],  # x linear in end effector frame
+                    lin_input_in_o_frame[1][0],  # y linear in end effector frame
+                    lin_input_in_o_frame[2][0],  # z linear in end effector frame
+                    ang_input_in_o_frame[0][0],  # x angular in end effector frame
+                    ang_input_in_o_frame[1][0],  # y angular in end effector frame
+                    ang_input_in_o_frame[2][0],  # z angular in end effector frame
+                ]
 
-            self.force_based_control_input = [
-                lin_output_in_o_frame[0][0],  # x linear in end effector frame
-                lin_output_in_o_frame[1][0],  # y linear in end effector frame
-                lin_output_in_o_frame[2][0],  # z linear in end effector frame
-                ang_output_in_o_frame[0][0],  # x angular in end effector frame
-                ang_output_in_o_frame[1][0],  # y angular in end effector frame
-                ang_output_in_o_frame[2][0],  # z angular in end effector frame
-            ]
+            # Publish the error of the force system
+            self.force_based_error_publisher.publish(Float64([0, 0, z_lin_current_error, x_ang_current_error, 0, 0]))
 
-        self.force_based_error_publisher.publish(Float64(z_lin_current_error))
+        # Otherwise send no force control signal
+        else:
+            self.force_based_control_input = [0, 0, 0, 0, 0, 0]
 
     def robot_pose_control_input_calculation(self) -> None:
         """
@@ -269,9 +286,10 @@ class RobotControlNode(BasicNode):
         if self.o_t_ee is not None:
 
             # Calculate the output based on the current distance to the surface
-            x_lin_output, x_lin_set_point_reached, x_lin_current_error = self.linear_x_controller.calculate_output(
-                array([self.o_t_ee[0][3], self.o_t_ee[1][3], self.o_t_ee[2][3]])
-            )
+            x_lin_output, self.current_trajectory_set_point_reached, x_lin_current_error = \
+                self.linear_x_controller.calculate_output(
+                    array([self.o_t_ee[0][3], self.o_t_ee[1][3], self.o_t_ee[2][3]])
+                )
 
             # Publish the control input relative to the end effector
             self.position_based_control_input_publisher.publish(self.create_twist_stamped_from_list([x_lin_output, 0, 0,
@@ -291,11 +309,17 @@ class RobotControlNode(BasicNode):
             ]
 
             # Publish if the goal position was reached
-            self.position_goal_reached_publisher.publish(Bool(x_lin_set_point_reached))
-            self.position_error_publisher.publish(Float64(x_lin_current_error))
+            self.position_goal_reached_publisher.publish(Bool(self.current_trajectory_set_point_reached))
+            position_error_msg = Float64Stamped()
+            position_error_msg.data.data = x_lin_current_error
+            position_error_msg.header.stamp = Time.now()
+            self.position_error_publisher.publish(position_error_msg)
 
             # If the set point has been reached,
-            if x_lin_set_point_reached:
+            if self.current_trajectory_set_point_reached and self.has_data_been_registered:
+                # Note that the current set point has no longer been reached
+                self.current_trajectory_set_point_reached = False
+
                 # Delete the first coordinate in the trajectory
                 self.current_trajectory = array([self.current_trajectory[0][1:],
                                                  self.current_trajectory[1][1:],
@@ -341,11 +365,11 @@ class RobotControlNode(BasicNode):
             current_trajectory_set_point_message = Float64MultiArray()
 
             # Fill in the message with data from the current trajectory set point
-            current_trajectory_set_point_message.layout.dim.append(MultiArrayDimension)
+            current_trajectory_set_point_message.layout.dim.append(MultiArrayDimension())
             current_trajectory_set_point_message.layout.dim[0].label = 'vectors'
             current_trajectory_set_point_message.layout.dim[0].size = self.current_trajectory_set_point.shape[0]
             current_trajectory_set_point_message.layout.dim[0].stride = self.current_trajectory_set_point.size
-            current_trajectory_set_point_message.layout.dim.append(MultiArrayDimension)
+            current_trajectory_set_point_message.layout.dim.append(MultiArrayDimension())
             current_trajectory_set_point_message.layout.dim[1].label = 'dimensions'
             current_trajectory_set_point_message.layout.dim[1].size = self.current_trajectory_set_point.shape[1]
             current_trajectory_set_point_message.layout.dim[1].stride = self.current_trajectory_set_point.shape[1]
@@ -420,7 +444,9 @@ class RobotControlNode(BasicNode):
 
             # Define the distance to travel and the number of points to generate along the way
             travel_distance = data.data
-            num_points = 10
+            min_distance_between_registered_scans = 3  # millimeters
+            min_distance_between_registered_scans = min_distance_between_registered_scans / 1000  # converted to meters
+            num_points = round(travel_distance/min_distance_between_registered_scans)
 
             # Save a copy of the robot pose transformation to use to ensure data is not overwritten in the process
             local_pose_transformation = copy(self.o_t_ee)
@@ -540,108 +566,18 @@ class RobotControlNode(BasicNode):
     # endregion
     ######################
 
-    #############################################################
-    # Calculate the equivalent transformation to the end effector
+    #####################
+    # Robot Pose Callback
     # region
-    def read_static_transformation_callback(self, data: TFMessage):
+    def robot_pose_callback(self, msg: Float64MultiArrayStamped):
         """
-        Read the static transformation between of Link 7.
+        Pull the transformation matrix out of the message then calculate the control input based on the robot pose.
         """
+        # Save the transformation matrix
+        self.o_t_ee = array(msg.data.data).reshape((4, 4))
 
-        # Pull out single transform
-        transform: TransformStamped = data.transforms[0]
-
-        # Make sure the transformation is from Link 8
-        if transform.child_frame_id == LINK_8:
-            # Add the transformation to the dictionary
-            self.create_transformation_from_transform(transform)
-
-    def create_transformation_callback(self, data: TFMessage):
-        """
-        Calculate the transformation to the end effector based on the transforms given.
-        """
-
-        # For each transformation sent
-        for transform in data.transforms:
-
-            # Tell python what it is
-            transform: TransformStamped
-
-            # Pull out the name of the transformation
-            transformation_name = transform.child_frame_id
-
-            # If the name matches a key value
-            if transformation_name in self.individual_transformations:
-                # Add the transformation to the dictionary
-                self.create_transformation_from_transform(transform)
-
-        if len(data.transforms) == 7 and self.individual_transformations[LINK_EE].size > 0:
-            # Define a variable to save the final transformation in
-            o_t_ee = identity(4)
-
-            # Iteratively calculate the final transformation through the transformation from each link
-            for key in [LINK_1, LINK_2, LINK_3, LINK_4, LINK_5, LINK_6, LINK_7, LINK_8, LINK_EE]:
-                o_t_ee = o_t_ee @ self.individual_transformations[key]
-
-            # Save the transformation for local use
-            self.o_t_ee = o_t_ee
-
-            # Define a new message object for publishing the transformation matrix
-            o_t_ee_msg = Float64MultiArrayStamped()
-            o_t_ee_msg.header.stamp = data.transforms[0].header.stamp
-            o_t_ee_msg.data.layout.dim.append(MultiArrayDimension)
-            o_t_ee_msg.data.layout.dim[0].label = 'rows'
-            o_t_ee_msg.data.layout.dim[0].size = 4
-            o_t_ee_msg.data.layout.dim[0].stride = 16
-            o_t_ee_msg.data.layout.dim.append(MultiArrayDimension)
-            o_t_ee_msg.data.layout.dim[0].label = 'columns'
-            o_t_ee_msg.data.layout.dim[0].size = 4
-            o_t_ee_msg.data.layout.dim[0].stride = 4
-            o_t_ee_msg.data.data = o_t_ee.reshape([16])
-
-            self.end_effector_transformation_publisher.publish(o_t_ee_msg)
-
-            # Calculate the control input based on the new robot pose
-            self.robot_pose_control_input_calculation()
-
-    def create_transformation_from_transform(self, transform: TransformStamped):
-        """
-        Add the given transform to dictionary of transformations after converting it to a homogeneous
-        transformation matrix.
-        """
-
-        # Make sure the dictionary exists before trying to use it
-        if self.individual_transformations is not None:
-            # Pull out the translation vector and the rotation quaternion
-            translation_vector = array([transform.transform.translation.x,
-                                        transform.transform.translation.y,
-                                        transform.transform.translation.z])
-            rotation_quaternion = array([transform.transform.rotation.x,
-                                         transform.transform.rotation.y,
-                                         transform.transform.rotation.z,
-                                         transform.transform.rotation.w, ])
-
-            # Calculate and store the homogeneous translation matrix
-            self.individual_transformations[transform.child_frame_id] = self.create_homogeneous_transformation_matrix(
-                translation_vector, rotation_quaternion
-            )
-
-    @staticmethod
-    def create_homogeneous_transformation_matrix(v: array, q: array):
-        """
-        Create a homogeneous transformation matrix from a vertex and a quaternion.
-        """
-
-        # Calculate a rotation matrix from the quaternion
-        r = Rotation.from_quat(q).as_matrix()
-
-        # Assemble the homogeneous transformation matrix
-        return array([
-            [r[0][0], r[0][1], r[0][2], v[0]],
-            [r[1][0], r[1][1], r[1][2], v[1]],
-            [r[2][0], r[2][1], r[2][2], v[2]],
-            [0, 0, 0, 1]
-        ])
+        # Calculate the corresponding control input
+        self.robot_pose_control_input_calculation()
 
     def get_rotation_matrix_of_pose(self):
         return array([self.o_t_ee[0][:3],
@@ -656,7 +592,21 @@ class RobotControlNode(BasicNode):
                       ])
 
     # endregion
-    #############################################################
+    #####################
+
+    def image_based_patient_contact_callback(self, data: Bool):
+        self.in_contact_with_patient = data.data
+
+    def registered_data_received_callback(self, _):
+        """
+        Once a set of registered data has been received, update the flag only if the robot has already reached
+        current trajectory set point.
+        """
+
+        # If the current set point has been reached
+        if self.current_trajectory_set_point_reached:
+            # Note that a registered data point has been received
+            self.has_data_been_registered = True
 
     def publish_goal_surface_as_transform(self):
 
@@ -720,6 +670,13 @@ class RobotControlNode(BasicNode):
         self.force_based_controller_use_publisher.publish(Bool(self.use_force_feedback_flag))
         self.image_based_controller_use_publisher.publish(Bool(self.use_image_feedback_flag))
 
+        # Limit the control inputs allowed to be supplied to the robot
+        for ii in range(3):
+            if control_input_array[ii] > self.lin_max_speed:
+                control_input_array[ii] = self.lin_max_speed
+            if control_input_array[ii+3] > self.ang_max_speed:
+                control_input_array[ii+3] = self.ang_max_speed
+
         # Create a message and fill it with the desired control input
         control_input_message = TwistStamped()
         control_input_message.twist.linear.x = control_input_array[0]
@@ -731,28 +688,6 @@ class RobotControlNode(BasicNode):
 
         self.cartesian_velocity_publisher.publish(control_input_message)
 
-    """def trajectory_goal_reached(self):
-        # If the goal currently published goal has been reached and the current trajectory is not None
-        if self.current_trajectory is not None:
-
-            # Delete the first coordinate in the trajectory
-            self.current_trajectory = array([self.current_trajectory[0][1:],
-                                             self.current_trajectory[1][1:],
-                                             self.current_trajectory[2][1:],
-                                             ])
-
-            # If the trajectory is not empty
-            if self.current_trajectory.size > 0:
-
-                # Generate the new trajectory message
-                self.update_current_trajectory_set_point()
-
-            # Else make both None
-            else:
-                self.current_trajectory = None
-                self.current_trajectory_set_point = None"""
-
-
 
 if __name__ == '__main__':
 
@@ -762,7 +697,8 @@ if __name__ == '__main__':
     # Set publishing rate
     publishing_rate = Rate(100)  # hz
 
-    print("Node initialized. Press ctrl+c to terminate.")
+    print("Node initialized.")
+    print("Press ctrl+c to terminate.")
 
     while not is_shutdown():
         # Run the main function of the node

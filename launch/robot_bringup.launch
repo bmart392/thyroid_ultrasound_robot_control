@@ -6,6 +6,6 @@
 	<node name="RobotControlNode" pkg="thyroid_ultrasound_robot_control" type="RobotControlNode.py"/>
 	
 	<!-- start the trajectory generation node -->
-	<!--<node name="TrajectoryGenerationNode" pkg="thyroid_ultrasound_robot_control" type="TrajectoryGenerationNode.py"/>-->
+	<node name="TransformationCreationNode" pkg="thyroid_ultrasound_robot_control" type="TransformationCreationNode.py"/>
 	
 </launch>
