@@ -96,7 +96,7 @@ class BasicController:
         else:
             raise Exception("Incorrect channel selected.")
 
-    def __calculate_current_error(self, new_reading) -> float:
+    def calculate_current_error(self, new_reading) -> float:
         """
         Calculates the current error based on the new reading.
 
@@ -126,7 +126,7 @@ class BasicController:
         if self.set_point is not None:
 
             # Calculate the current error
-            current_error = self.__calculate_current_error(new_reading)
+            current_error = self.calculate_current_error(new_reading)
 
             # If the current error is greater than the error tolerance,
             if abs(current_error) > self.error_tolerance:

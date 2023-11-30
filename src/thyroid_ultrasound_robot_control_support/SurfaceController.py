@@ -42,7 +42,7 @@ class SurfaceController(BasicController):
                          set_point=set_point, min_output=min_output,
                          max_output=max_output)
 
-    def __calculate_current_error(self, new_reading):
+    def calculate_current_error(self, new_reading):
         """
         Calculates the error as the distance from the set-point to the surface as measured along
         the normal vector of the surface.

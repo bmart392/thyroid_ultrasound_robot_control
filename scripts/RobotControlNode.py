@@ -50,8 +50,9 @@ class RobotControlNode(BasicNode):
         self.linear_y_controller = BasicController(p_gain=0.1, error_tolerance=0.0002,
                                                    d_gain=0.000, i_gain=.000,
                                                    set_point=0.)  # y linear, image-based, error = meters
-        self.linear_z_controller = BasicController(p_gain=.01, error_tolerance=0.100,
-                                                   d_gain=.000, i_gain=.000)  # z linear, force-based, error = Newtons
+        self.linear_z_controller = BasicController(p_gain=.011, error_tolerance=0.100,
+                                                   d_gain=.075, i_gain=.000,
+                                                   max_output=0.02)  # z linear, force-based, error = Newtons
         self.angular_x_controller = BasicController(p_gain=0.02, error_tolerance=0.100,
                                                     d_gain=0.00, i_gain=0,
                                                     set_point=0.)  # x rotation, image-based, error = degrees
@@ -72,6 +73,7 @@ class RobotControlNode(BasicNode):
         self.image_based_control_input = zeros(6)
         self.force_based_control_input = zeros(6)
         self.position_based_control_input = zeros(6)
+        self.patient_contact_based_control_input = zeros(6)
 
         # Define variables to store relevant robot information
         self.robot_sensed_force = zeros(6)
@@ -146,9 +148,15 @@ class RobotControlNode(BasicNode):
         self.image_based_controller_use_publisher = Publisher(RC_IMAGE_IN_USE, Bool, queue_size=1)
         self.image_based_control_input_publisher = Publisher(RC_IMAGE_CONTROL_INPUT_EE, TwistStamped, queue_size=1)
 
+        # Define publishers for displaying information about tracking patient contact
+        self.patient_contact_controller_use_publisher = Publisher(RC_PATIENT_CONTACT_IN_USE, Bool, queue_size=1)
+        self.patient_contact_control_input_publisher = Publisher(RC_PATIENT_CONTACT_CONTROL_INPUT_EE, TwistStamped,
+                                                                 queue_size=1)
+
         # Create control input subscribers
         Subscriber(RC_IMAGE_ERROR, TwistStamped, self.image_based_control_input_calculation)
         Subscriber(ROBOT_FORCE, WrenchStamped, self.robot_force_control_input_calculation)
+        Subscriber(RC_PATIENT_CONTACT_ERROR, Float64Stamped, self.patient_contact_control_input_calculation)
 
         # Create goal state subscribers
         Subscriber(RC_FORCE_SET_POINT, Float64, self.force_set_point_callback)
@@ -164,7 +172,7 @@ class RobotControlNode(BasicNode):
 
         Subscriber(ROBOT_DERIVED_POSE, Float64MultiArrayStamped, self.robot_pose_callback)
 
-        Subscriber(IS_IMAGE_EMPTY, Bool, self.image_based_patient_contact_callback)
+        Subscriber(IMAGE_PATIENT_CONTACT, Bool, self.image_based_patient_contact_callback)
 
         # Create publishers and subscribers to tune the PID controllers
         Subscriber(CONTROLLER_SELECTOR, UInt8, self.set_selected_controller_callback)
@@ -221,11 +229,9 @@ class RobotControlNode(BasicNode):
 
         # Add in the new force value for each dimension
         self.force_history[2] = append(self.force_history[2], data.wrench.force.z)
-        self.force_history[3] = append(self.force_history[3], data.wrench.torque.x)
 
         # Average the force history to find a more consistent force value
         self.robot_sensed_force[2] = round(float(median(self.force_history[2])), 2)
-        self.robot_sensed_force[3] = round(float(median(self.force_history[3])), 2)
 
         # Create the message used to send the cleaned force data
         cleaned_force_message = WrenchStamped()
@@ -235,7 +241,6 @@ class RobotControlNode(BasicNode):
 
         # Assign the necessary fields in the message
         cleaned_force_message.wrench.force.z = self.robot_sensed_force[2]
-        cleaned_force_message.wrench.torque.x = self.robot_sensed_force[3]
 
         # Publish the cleaned force message
         self.cleaned_force_publisher.publish(cleaned_force_message)
@@ -247,32 +252,28 @@ class RobotControlNode(BasicNode):
             z_lin_input, z_lin_set_point_reached, z_lin_current_error = self.linear_z_controller.calculate_output(
                 self.robot_sensed_force[2]
             )
-            x_ang_input, x_ang_set_point_reached, x_ang_current_error = self.angular_x_controller.calculate_output(
-                self.robot_sensed_force[3]
-            )
 
             # Publish the control output relative to the end effector frame
             self.force_based_control_input_publisher.publish(self.create_twist_stamped_from_list([0, 0, z_lin_input,
-                                                                                                  x_ang_input, 0, 0]))
+                                                                                                  0, 0, 0]))
 
             # Ensure that the transformation matrix to the end effector exists before using it
             if self.o_t_ee is not None:
                 # Transform the output from the end effector frame to the origin frame
                 lin_input_in_o_frame = self.get_rotation_matrix_of_pose() @ array([[0], [0], [z_lin_input]])
-                ang_input_in_o_frame = self.get_rotation_matrix_of_pose() @ array([[x_ang_input], [0], [0]])
 
                 # Save the control inputs for use in the main loop
                 self.force_based_control_input = [
                     lin_input_in_o_frame[0][0],  # x linear in end effector frame
                     lin_input_in_o_frame[1][0],  # y linear in end effector frame
                     lin_input_in_o_frame[2][0],  # z linear in end effector frame
-                    ang_input_in_o_frame[0][0],  # x angular in end effector frame
-                    ang_input_in_o_frame[1][0],  # y angular in end effector frame
-                    ang_input_in_o_frame[2][0],  # z angular in end effector frame
+                    0,  # x angular in end effector frame
+                    0,  # y angular in end effector frame
+                    0,  # z angular in end effector frame
                 ]
 
             # Publish the error of the force system
-            self.force_based_error_publisher.publish(Float64([0, 0, z_lin_current_error, x_ang_current_error, 0, 0]))
+            self.force_based_error_publisher.publish(Float64(z_lin_current_error))  # Float64([0, 0, z_lin_current_error, 0, 0, 0]))
 
         # Otherwise send no force control signal
         else:
@@ -328,6 +329,32 @@ class RobotControlNode(BasicNode):
 
                 # Update the current trajectory set point as necessary
                 self.update_current_trajectory_set_point()
+
+    def patient_contact_control_input_calculation(self, msg: Float64Stamped) -> None:
+
+        # Calculate the control input relative to the end effector using the image position error
+        x_ang_output, x_ang_set_point_reached, x_ang_current_error = self.angular_x_controller.calculate_output(
+            msg.data.data
+        )
+
+        # Publish the control inputs relative to the end effector
+        self.patient_contact_control_input_publisher.publish(self.create_twist_stamped_from_list([0, 0, 0,
+                                                                                              x_ang_output, 0, 0]))
+
+        # Ensure that the transformation matrix to the end effector exists before using it
+        if self.o_t_ee is not None:
+            # Calculate the control inputs relative to the base frame
+            x_ang_output_in_o_frame = self.get_rotation_matrix_of_pose() @ array([[x_ang_output], [0], [0]])
+
+            # Save the control inputs
+            self.patient_contact_based_control_input = [
+                0,  # x linear in end effector frame
+                0,  # y linear in end effector frame
+                0,  # z linear in end effector frame
+                x_ang_output_in_o_frame[0][0],  # x angular in end effector frame
+                x_ang_output_in_o_frame[1][0],  # y angular in end effector frame
+                x_ang_output_in_o_frame[2][0],  # z angular in end effector frame
+            ]
 
     # endregion
     ##########################
@@ -663,7 +690,8 @@ class RobotControlNode(BasicNode):
             control_input_array = control_input_array + self.image_based_control_input
 
         if self.use_force_feedback_flag:
-            control_input_array = control_input_array + self.force_based_control_input
+            control_input_array = control_input_array + self.force_based_control_input + \
+                                  self.patient_contact_based_control_input
 
         # Publish the in_use flags
         self.position_based_controller_use_publisher.publish(Bool(self.use_pose_feedback_flag))

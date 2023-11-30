@@ -54,5 +54,3 @@ class Surface:
         Calculate the magnitude of the given vector.
         """
         return sqrt(sum(vector ** 2))
-
-
