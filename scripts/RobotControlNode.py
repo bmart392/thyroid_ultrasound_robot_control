@@ -4,6 +4,8 @@
 File containing the RobotControlNode class.
 """
 
+# TODO - HIGH - Add an overall speed factor to allow me to slow down the motion of the of the entire robot
+
 # Import standard ros packages
 from rospy import Time
 from geometry_msgs.msg import TwistStamped, WrenchStamped, TransformStamped
