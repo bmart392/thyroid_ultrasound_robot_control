@@ -55,7 +55,7 @@ class RobotControlNode(BasicNode):
         self.linear_z_controller = BasicController(p_gain=.011, error_tolerance=0.100,
                                                    d_gain=.075, i_gain=.000,
                                                    max_output=0.02)  # z linear, force-based, error = Newtons
-        self.angular_x_controller = BasicController(p_gain=0.02, error_tolerance=0.100,
+        self.angular_x_controller = BasicController(p_gain=0.02, error_tolerance=0.100,  # try multiply p by 5
                                                     d_gain=0.00, i_gain=0,
                                                     set_point=0.)  # x rotation, image-based, error = degrees
         self.angular_y_controller = BasicController(p_gain=0.00, error_tolerance=1.000,
