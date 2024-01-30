@@ -4,6 +4,9 @@
 File for creating the transformation between the base frame and the end effector.
 """
 
+# TODO - Dream - Add proper logging through the BasicNode Class
+# TODO - Dream - Add proper exceptions for everything
+
 # Import standard ROS packages
 from std_msgs.msg import MultiArrayDimension
 from franka_msgs.msg import FrankaState
@@ -33,7 +36,7 @@ class TransformationCreationNode(BasicNode):
         super().__init__()
 
         # Initialize the node
-        init_node('TransformationCreationNode')
+        init_node(TRANSFORMATION_CREATION)
 
         # Create a subscriber to listen for the joint angles
         Subscriber(ROBOT_STATE, FrankaState, self.calculate_ee_transformation)

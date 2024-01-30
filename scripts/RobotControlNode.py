@@ -4,7 +4,10 @@
 File containing the RobotControlNode class.
 """
 
-# TODO - HIGH - Add an overall speed factor to allow me to slow down the motion of the of the entire robot
+# TODO - High - Tune each of the PID controllers
+# TODO - High - Check why image based input error doesnt seem to be doing anything - try boosting p_gain to something in the realm of 1.0
+# TODO - Dream - Add proper logging through the BasicNode Class
+# TODO - Dream - Add proper exceptions for everything
 
 # Import standard ros packages
 from rospy import Time
@@ -38,24 +41,26 @@ class RobotControlNode(BasicNode):
         super().__init__()
 
         # Define the max speed allowed for any linear control input
-        self.lin_max_speed = 0.2  # m/s
+        self.lin_max_speed = 0.05  # m/s
         self.ang_max_speed = 0.01  # rad/s
+
+        # Define an overall speed factor that can be used to control the overall speed of the robot
+        self.overall_speed_factor = 1.0
 
         # Define flag to know when the image is centered
         self.is_image_centered = False
 
         # Define controller objects for each dimension
-        # TODO - High - THESE CONTROLLERS NEED TO BE TUNED
-        self.linear_x_controller = SurfaceController(p_gain=0.300, error_tolerance=0.007,
+        self.linear_x_controller = SurfaceController(p_gain=0.001, error_tolerance=0.007,  # 0.3, 0.007, 0.000, 0.0000
                                                      d_gain=0.0000,
                                                      i_gain=0.0000)  # x linear, position-based, error = meters
-        self.linear_y_controller = BasicController(p_gain=0.1, error_tolerance=0.0002,
+        self.linear_y_controller = BasicController(p_gain=0.001, error_tolerance=0.0002,  # 0.1, 0.0002, 0.000, 0.000
                                                    d_gain=0.000, i_gain=.000,
                                                    set_point=0.)  # y linear, image-based, error = meters
-        self.linear_z_controller = BasicController(p_gain=.011, error_tolerance=0.100,
-                                                   d_gain=.075, i_gain=.000,
+        self.linear_z_controller = BasicController(p_gain=0.001, error_tolerance=0.100,  # 0.011, 0.1, 0.75, 0.000
+                                                   d_gain=0.000, i_gain=0.000,
                                                    max_output=0.02)  # z linear, force-based, error = Newtons
-        self.angular_x_controller = BasicController(p_gain=0.02, error_tolerance=0.100,  # try multiply p by 5
+        self.angular_x_controller = BasicController(p_gain=0.001, error_tolerance=0.100,  # 0.02, 0.1, 0.000, 0.000
                                                     d_gain=0.00, i_gain=0,
                                                     set_point=0.)  # x rotation, image-based, error = degrees
         self.angular_y_controller = BasicController(p_gain=0.00, error_tolerance=1.000,
@@ -124,7 +129,7 @@ class RobotControlNode(BasicNode):
         self.in_contact_with_patient = False
 
         # Initialize the node
-        init_node('RobotControlNode')
+        init_node(ROBOT_CONTROL)
 
         # Define publisher for cleaned force
         self.cleaned_force_publisher = Publisher(ROBOT_DERIVED_FORCE, WrenchStamped, queue_size=1)
@@ -175,6 +180,8 @@ class RobotControlNode(BasicNode):
         Subscriber(ROBOT_DERIVED_POSE, Float64MultiArrayStamped, self.robot_pose_callback)
 
         Subscriber(IMAGE_PATIENT_CONTACT, Bool, self.image_based_patient_contact_callback)
+
+        Subscriber(RC_OVERALL_ROBOT_SPEED, Float64, self.overall_speed_factor_callback)
 
         # Create publishers and subscribers to tune the PID controllers
         Subscriber(CONTROLLER_SELECTOR, UInt8, self.set_selected_controller_callback)
@@ -523,6 +530,19 @@ class RobotControlNode(BasicNode):
     # endregion
     ###########################
 
+    #########################
+    # Robot Control Callbacks
+    # region
+    def overall_speed_factor_callback(self, data: Float64):
+        """
+        Set the overall speed factor as long as the values are within a safe range between 0 and 1.3 non-inclusive.
+        """
+        if 0 < data.data < 1.3:
+            self.overall_speed_factor = data.data
+
+    # endregion
+    #########################
+
     ######################
     # PID Tuning Callbacks
     # region
@@ -706,6 +726,9 @@ class RobotControlNode(BasicNode):
                 control_input_array[ii] = self.lin_max_speed
             if control_input_array[ii+3] > self.ang_max_speed:
                 control_input_array[ii+3] = self.ang_max_speed
+
+        # Apply the overall speed factor to the final control input
+        control_input_array = [j * self.overall_speed_factor for j in control_input_array]
 
         # Create a message and fill it with the desired control input
         control_input_message = TwistStamped()
