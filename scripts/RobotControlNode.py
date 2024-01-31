@@ -4,8 +4,7 @@
 File containing the RobotControlNode class.
 """
 
-# TODO - High - Tune each of the PID controllers
-# TODO - High - Check why image based input error doesnt seem to be doing anything - try boosting p_gain to something in the realm of 1.0
+# TODO - Dream - Fin-tune each of the PID controllers
 # TODO - Dream - Add proper logging through the BasicNode Class
 # TODO - Dream - Add proper exceptions for everything
 
@@ -51,7 +50,7 @@ class RobotControlNode(BasicNode):
         self.is_image_centered = False
 
         # Define controller objects for each dimension
-        self.linear_x_controller = SurfaceController(p_gain=0.001, error_tolerance=0.007,  # 0.3, 0.007, 0.000, 0.0000
+        self.linear_x_controller = SurfaceController(p_gain=0.2, error_tolerance=0.007,  # 0.3, 0.007, 0.000, 0.0000
                                                      d_gain=0.0000,
                                                      i_gain=0.0000)  # x linear, position-based, error = meters
         self.linear_y_controller = BasicController(p_gain=0.500, error_tolerance=0.0002,  # 0.1, 0.0002, 0.000, 0.000
@@ -296,7 +295,7 @@ class RobotControlNode(BasicNode):
         """
         Calculate the robot pose based control input using the current pose and the pose goal
         """
-        # Only compute if the pose goal exists
+        # Only compute if the current pose exists
         if self.o_t_ee is not None:
 
             # Calculate the output based on the current distance to the surface
@@ -330,7 +329,7 @@ class RobotControlNode(BasicNode):
             self.position_error_publisher.publish(position_error_msg)
 
             # If the set point has been reached,
-            if self.current_trajectory_set_point_reached and self.has_data_been_registered:
+            if self.current_trajectory_set_point_reached:  # and self.has_data_been_registered:
                 # Note that the current set point has no longer been reached
                 self.current_trajectory_set_point_reached = False
 
@@ -499,7 +498,7 @@ class RobotControlNode(BasicNode):
             travel_distance = data.data
             min_distance_between_registered_scans = 3  # millimeters
             min_distance_between_registered_scans = min_distance_between_registered_scans / 1000  # converted to meters
-            num_points = round(travel_distance / min_distance_between_registered_scans)
+            num_points = abs(round(travel_distance / min_distance_between_registered_scans))
 
             # Save a copy of the robot pose transformation to use to ensure data is not overwritten in the process
             local_pose_transformation = copy(self.o_t_ee)
@@ -541,8 +540,12 @@ class RobotControlNode(BasicNode):
         Clear the current trajectory from the node. NOT IMPLEMENTED
         """
         if data.data:
-            a = len(self.current_trajectory)
-            pass
+
+            # Clear the trajectory
+            self.current_trajectory = array([array([]), array([]), array([])])
+
+            # Update the trajectory
+            self.update_current_trajectory_set_point()
 
     # endregion
     ###########################
