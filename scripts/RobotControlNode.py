@@ -54,13 +54,13 @@ class RobotControlNode(BasicNode):
         self.linear_x_controller = SurfaceController(p_gain=0.001, error_tolerance=0.007,  # 0.3, 0.007, 0.000, 0.0000
                                                      d_gain=0.0000,
                                                      i_gain=0.0000)  # x linear, position-based, error = meters
-        self.linear_y_controller = BasicController(p_gain=0.001, error_tolerance=0.0002,  # 0.1, 0.0002, 0.000, 0.000
+        self.linear_y_controller = BasicController(p_gain=0.500, error_tolerance=0.0002,  # 0.1, 0.0002, 0.000, 0.000
                                                    d_gain=0.000, i_gain=.000,
                                                    set_point=0.)  # y linear, image-based, error = meters
-        self.linear_z_controller = BasicController(p_gain=0.001, error_tolerance=0.100,  # 0.011, 0.1, 0.75, 0.000
+        self.linear_z_controller = BasicController(p_gain=0.01, error_tolerance=0.100,  # 0.011, 0.1, 0.75, 0.000
                                                    d_gain=0.000, i_gain=0.000,
                                                    max_output=0.02)  # z linear, force-based, error = Newtons
-        self.angular_x_controller = BasicController(p_gain=0.001, error_tolerance=0.100,  # 0.02, 0.1, 0.000, 0.000
+        self.angular_x_controller = BasicController(p_gain=0.002, error_tolerance=0.100,  # 0.02, 0.1, 0.000, 0.000
                                                     d_gain=0.00, i_gain=0,
                                                     set_point=0.)  # x rotation, image-based, error = degrees
         self.angular_y_controller = BasicController(p_gain=0.00, error_tolerance=1.000,
@@ -73,7 +73,7 @@ class RobotControlNode(BasicNode):
         self.force_based_gains = array([.01, .01, .005, .01, .01, .01])
 
         # Define variables to store data for force history
-        self.force_history_length = 15
+        self.force_history_length = 30
         self.force_history = [array([]), array([]), array([]), array([]), array([]), array([])]
 
         # Define control inputs to be used
@@ -94,6 +94,7 @@ class RobotControlNode(BasicNode):
         self.use_image_feedback_flag = False
         self.use_pose_feedback_flag = False
         self.use_force_feedback_flag = False
+        self.use_balancing_feedback_flag = False
 
         # Define a dictionary to store each individual transformation
         self.individual_transformations = {LINK_1: array([]),
@@ -172,6 +173,8 @@ class RobotControlNode(BasicNode):
         Subscriber(USE_IMAGE_FEEDBACK, Bool, self.use_image_feedback_command_callback)
         Subscriber(USE_POSE_FEEDBACK, Bool, self.use_pose_feedback_command_callback)
         Subscriber(USE_FORCE_FEEDBACK, Bool, self.use_force_feedback_command_callback)
+        Subscriber(USE_BALANCING_FEEDBACK, Bool, self.use_balancing_feedback_command_callback)
+
         Subscriber(CREATE_TRAJECTORY, Float64, self.create_trajectory_command_callback)
         Subscriber(CLEAR_TRAJECTORY, Bool, self.clear_trajectory_command_callback)
 
@@ -282,7 +285,8 @@ class RobotControlNode(BasicNode):
                 ]
 
             # Publish the error of the force system
-            self.force_based_error_publisher.publish(Float64(z_lin_current_error))  # Float64([0, 0, z_lin_current_error, 0, 0, 0]))
+            self.force_based_error_publisher.publish(
+                Float64(z_lin_current_error))  # Float64([0, 0, z_lin_current_error, 0, 0, 0]))
 
         # Otherwise send no force control signal
         else:
@@ -348,7 +352,7 @@ class RobotControlNode(BasicNode):
 
         # Publish the control inputs relative to the end effector
         self.patient_contact_control_input_publisher.publish(self.create_twist_stamped_from_list([0, 0, 0,
-                                                                                              x_ang_output, 0, 0]))
+                                                                                                  x_ang_output, 0, 0]))
 
         # Ensure that the transformation matrix to the end effector exists before using it
         if self.o_t_ee is not None:
@@ -470,6 +474,19 @@ class RobotControlNode(BasicNode):
 
         print("Command sent: " + str(data.data))
 
+    def use_balancing_feedback_command_callback(self, data: Bool) -> None:
+        """
+        Update the use_balancing_feedback_flag based on the command value given.
+        """
+        if not self.use_balancing_feedback_flag == data.data:
+            if data.data:
+                print("Balancing feedback turned on.")
+            else:
+                print("Balancing feedback turned off.")
+        self.use_balancing_feedback_flag = data.data
+
+        print("Command sent: " + str(data.data))
+
     def create_trajectory_command_callback(self, data: Float64):
         """
         Create a trajectory using the given offset in the y-axis of the end effector.
@@ -482,7 +499,7 @@ class RobotControlNode(BasicNode):
             travel_distance = data.data
             min_distance_between_registered_scans = 3  # millimeters
             min_distance_between_registered_scans = min_distance_between_registered_scans / 1000  # converted to meters
-            num_points = round(travel_distance/min_distance_between_registered_scans)
+            num_points = round(travel_distance / min_distance_between_registered_scans)
 
             # Save a copy of the robot pose transformation to use to ensure data is not overwritten in the process
             local_pose_transformation = copy(self.o_t_ee)
@@ -712,8 +729,10 @@ class RobotControlNode(BasicNode):
             control_input_array = control_input_array + self.image_based_control_input
 
         if self.use_force_feedback_flag:
-            control_input_array = control_input_array + self.force_based_control_input + \
-                                  self.patient_contact_based_control_input
+            control_input_array = control_input_array + self.force_based_control_input
+
+        if self.use_balancing_feedback_flag:
+            control_input_array = control_input_array + self.patient_contact_based_control_input
 
         # Publish the in_use flags
         self.position_based_controller_use_publisher.publish(Bool(self.use_pose_feedback_flag))
@@ -724,8 +743,8 @@ class RobotControlNode(BasicNode):
         for ii in range(3):
             if control_input_array[ii] > self.lin_max_speed:
                 control_input_array[ii] = self.lin_max_speed
-            if control_input_array[ii+3] > self.ang_max_speed:
-                control_input_array[ii+3] = self.ang_max_speed
+            if control_input_array[ii + 3] > self.ang_max_speed:
+                control_input_array[ii + 3] = self.ang_max_speed
 
         # Apply the overall speed factor to the final control input
         control_input_array = [j * self.overall_speed_factor for j in control_input_array]
@@ -748,7 +767,7 @@ if __name__ == '__main__':
     node = RobotControlNode()
 
     # Set publishing rate
-    publishing_rate = Rate(100)  # hz
+    publishing_rate = Rate(300)  # hz
 
     print("Node initialized.")
     print("Press ctrl+c to terminate.")
