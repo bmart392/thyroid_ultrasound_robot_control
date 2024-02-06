@@ -8,7 +8,7 @@ File containing the Basic Controller class.
 from numpy import array, append, delete
 
 # Import custom python packages
-from thyroid_ultrasound_robot_control_support.ControllerConstants import *
+from thyroid_ultrasound_robot_control_support.Controllers.ControllerConstants import *
 
 
 class BasicController:

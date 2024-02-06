@@ -9,10 +9,9 @@ File containing the RobotControlNode class.
 # TODO - Dream - Add proper exceptions for everything
 
 # Import standard ros packages
-from rospy import Time
 from geometry_msgs.msg import TwistStamped, WrenchStamped, TransformStamped
 from tf2_ros import StaticTransformBroadcaster
-from std_msgs.msg import Float64, Bool, UInt8, Float64MultiArray, MultiArrayDimension
+from std_msgs.msg import UInt8, Float64MultiArray, MultiArrayDimension
 
 # Import standard packages
 from numpy import zeros, array, median, append, arange, linspace
@@ -26,10 +25,10 @@ from thyroid_ultrasound_messages.msg import Float64MultiArrayStamped, Float64Sta
 from thyroid_ultrasound_support.BasicNode import *
 from thyroid_ultrasound_support.TopicNames import *
 from thyroid_ultrasound_robot_control_support.RobotConstants import *
-from thyroid_ultrasound_robot_control_support.ControllerConstants import *
-from thyroid_ultrasound_robot_control_support.BasicController import BasicController
-from thyroid_ultrasound_robot_control_support.SurfaceController import SurfaceController
-from thyroid_ultrasound_robot_control_support.Surface import Surface
+from thyroid_ultrasound_robot_control_support.Controllers.ControllerConstants import *
+from thyroid_ultrasound_robot_control_support.Controllers.BasicController import BasicController
+from thyroid_ultrasound_robot_control_support.Controllers.FeatureBasedController.SurfaceController import SurfaceController
+from thyroid_ultrasound_robot_control_support.Controllers.FeatureBasedController.Surface import Surface
 
 
 class RobotControlNode(BasicNode):

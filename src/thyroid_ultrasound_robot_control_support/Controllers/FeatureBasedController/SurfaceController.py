@@ -4,8 +4,11 @@
 File containing the Surface class.
 """
 
-from thyroid_ultrasound_robot_control_support.BasicController import BasicController
-from thyroid_ultrasound_robot_control_support.Surface import Surface
+# TODO - Low - Add the ability to actually calculate and return an angular error
+
+
+from thyroid_ultrasound_robot_control_support.Controllers.BasicController import BasicController
+from thyroid_ultrasound_robot_control_support.Controllers.FeatureBasedController.Surface import Surface
 
 
 class SurfaceController(BasicController):
