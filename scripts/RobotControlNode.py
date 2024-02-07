@@ -79,6 +79,7 @@ class RobotControlNode(BasicNode):
         self.force_based_control_input = zeros(6)
         self.position_based_control_input = zeros(6)
         self.patient_contact_based_control_input = zeros(6)
+        self.experimental_noise_control_input = zeros(6)
 
         # Define variables to store relevant robot information
         self.robot_sensed_force = zeros(6)
@@ -163,6 +164,7 @@ class RobotControlNode(BasicNode):
         Subscriber(RC_IMAGE_ERROR, TwistStamped, self.image_based_control_input_calculation)
         Subscriber(ROBOT_FORCE, WrenchStamped, self.robot_force_control_input_calculation)
         Subscriber(RC_PATIENT_CONTACT_ERROR, Float64Stamped, self.patient_contact_control_input_calculation)
+        Subscriber(EXP_NOISE_VELOCITIES, TwistStamped, self.experimental_noise_calculation)
 
         # Create goal state subscribers
         Subscriber(RC_FORCE_SET_POINT, Float64, self.force_set_point_callback)
@@ -365,6 +367,23 @@ class RobotControlNode(BasicNode):
                 x_ang_output_in_o_frame[0][0],  # x angular in end effector frame
                 x_ang_output_in_o_frame[1][0],  # y angular in end effector frame
                 x_ang_output_in_o_frame[2][0],  # z angular in end effector frame
+            ]
+
+    def experimental_noise_calculation(self, msg: TwistStamped) -> None:
+
+        # Only compute if the robot pose is known
+        if self.o_t_ee is not None:
+            # Compute the output in the origin frame
+            y_lin_output_in_o_frame = self.get_rotation_matrix_of_pose() @ array([[0], [msg.twist.linear.y], [0]])
+
+            # Update the proper control input
+            self.experimental_noise_control_input = [
+                y_lin_output_in_o_frame[0][0],  # x linear in end effector frame
+                y_lin_output_in_o_frame[1][0],  # y linear in end effector frame
+                y_lin_output_in_o_frame[2][0],  # z linear in end effector frame
+                0,  # x angular in end effector frame
+                0,  # y angular in end effector frame
+                0,  # z angular in end effector frame
             ]
 
     # endregion
@@ -724,6 +743,7 @@ class RobotControlNode(BasicNode):
         # Create blank array to store the final control input as an array
         control_input_array = zeros(6)
 
+        # Add in the control inputs from each form of control
         if self.use_pose_feedback_flag:
             control_input_array = control_input_array + self.position_based_control_input
 
@@ -735,6 +755,9 @@ class RobotControlNode(BasicNode):
 
         if self.use_balancing_feedback_flag:
             control_input_array = control_input_array + self.patient_contact_based_control_input
+
+        # Add the control input from the noise-maker
+        control_input_array = control_input_array + self.experimental_noise_control_input
 
         # Publish the in_use flags
         self.position_based_controller_use_publisher.publish(Bool(self.use_pose_feedback_flag))
