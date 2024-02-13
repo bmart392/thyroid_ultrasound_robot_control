@@ -19,7 +19,7 @@ from copy import copy
 from scipy.spatial.transform import Rotation
 
 # Import custom ROS packages
-from thyroid_ultrasound_messages.msg import Float64MultiArrayStamped, Float64Stamped, RegisteredData
+from thyroid_ultrasound_messages.msg import Float64MultiArrayStamped, Float64Stamped, RegisteredDataMsg
 
 # Import custom python packages
 from thyroid_ultrasound_support.BasicNode import *
@@ -178,7 +178,7 @@ class RobotControlNode(BasicNode):
         Subscriber(CREATE_TRAJECTORY, Float64, self.create_trajectory_command_callback)
         Subscriber(CLEAR_TRAJECTORY, Bool, self.clear_trajectory_command_callback)
 
-        Subscriber(REGISTERED_DATA, RegisteredData, self.registered_data_received_callback)
+        Subscriber(REGISTERED_DATA_REAL_TIME, RegisteredDataMsg, self.registered_data_received_callback)
 
         Subscriber(ROBOT_DERIVED_POSE, Float64MultiArrayStamped, self.robot_pose_callback)
 
