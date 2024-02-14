@@ -330,7 +330,7 @@ class RobotControlNode(BasicNode):
             self.position_error_publisher.publish(position_error_msg)
 
             # If the set point has been reached,
-            if self.current_trajectory_set_point_reached:  # and self.has_data_been_registered:
+            if self.current_trajectory_set_point_reached and self.has_data_been_registered:
                 # Note that the current set point has no longer been reached
                 self.current_trajectory_set_point_reached = False
 
