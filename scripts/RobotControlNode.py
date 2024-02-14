@@ -7,6 +7,7 @@ File containing the RobotControlNode class.
 # TODO - Dream - Fin-tune each of the PID controllers
 # TODO - Dream - Add proper logging through the BasicNode Class
 # TODO - Dream - Add proper exceptions for everything
+# TODO - Dream - Add controls to test a range of forces to find the best force for the result
 
 # Import standard ros packages
 from geometry_msgs.msg import TwistStamped, WrenchStamped, TransformStamped
