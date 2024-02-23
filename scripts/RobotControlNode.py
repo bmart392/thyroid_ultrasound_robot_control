@@ -3,7 +3,6 @@
 """
 File containing the RobotControlNode class.
 """
-
 # TODO - Dream - Fin-tune each of the PID controllers
 # TODO - Dream - Add proper logging through the BasicNode Class
 # TODO - Dream - Add proper exceptions for everything
@@ -13,9 +12,11 @@ File containing the RobotControlNode class.
 from geometry_msgs.msg import TwistStamped, WrenchStamped, TransformStamped
 from tf2_ros import StaticTransformBroadcaster
 from std_msgs.msg import UInt8, Float64MultiArray, MultiArrayDimension
+from franka_msgs.msg import FrankaState
+from armer_msgs.msg import ManipulatorState
 
 # Import standard packages
-from numpy import zeros, array, median, append, arange, linspace
+from numpy import zeros, array, median, append, arange, linspace, identity
 from copy import copy
 from scipy.spatial.transform import Rotation
 
@@ -59,8 +60,8 @@ class RobotControlNode(BasicNode):
         self.linear_z_controller = BasicController(p_gain=0.01, error_tolerance=0.100,  # 0.011, 0.1, 0.75, 0.000
                                                    d_gain=0.000, i_gain=0.000,
                                                    max_output=0.02)  # z linear, force-based, error = Newtons
-        self.angular_x_controller = BasicController(p_gain=0.002, error_tolerance=0.100,  # 0.02, 0.1, 0.000, 0.000
-                                                    d_gain=0.00, i_gain=0,
+        self.angular_x_controller = BasicController(p_gain=0.04, error_tolerance=0.050,  # 0.02, 0.1, 0.000, 0.000
+                                                    d_gain=0.00, i_gain=0.5,
                                                     set_point=0.)  # x rotation, image-based, error = degrees
         self.angular_y_controller = BasicController(p_gain=0.00, error_tolerance=1.000,
                                                     d_gain=0.00, i_gain=0)  # y rotation, not measured, error = degrees
@@ -81,6 +82,7 @@ class RobotControlNode(BasicNode):
         self.position_based_control_input = zeros(6)
         self.patient_contact_based_control_input = zeros(6)
         self.experimental_noise_control_input = zeros(6)
+        self.manual_control_input = zeros(6)
 
         # Define variables to store relevant robot information
         self.robot_sensed_force = zeros(6)
@@ -110,6 +112,9 @@ class RobotControlNode(BasicNode):
 
         # Define a variable to save the current robot pose
         self.o_t_ee = None
+
+        # Define a variable to store the robot rotation matrix
+        self.robot_rotation_matrix = identity(3)
 
         # Create a variable to store which PID controller should be published and modified
         self.selected_pid_controller = int(0)
@@ -151,6 +156,7 @@ class RobotControlNode(BasicNode):
         self.position_based_controller_use_publisher = Publisher(RC_POSITION_IN_USE, Bool, queue_size=1)
         self.position_based_control_input_publisher = Publisher(RC_POSITION_CONTROL_INPUT_EE, TwistStamped,
                                                                 queue_size=1)
+        self.trajectory_complete_publisher = Publisher(RC_TRAJECTORY_COMPLETE, Bool, queue_size=1)
 
         # Define publishers for displaying information about the image control
         self.image_based_controller_use_publisher = Publisher(RC_IMAGE_IN_USE, Bool, queue_size=1)
@@ -187,6 +193,11 @@ class RobotControlNode(BasicNode):
 
         Subscriber(RC_OVERALL_ROBOT_SPEED, Float64, self.overall_speed_factor_callback)
 
+        Subscriber(RC_MANUAL_CONTROL_INPUT, TwistStamped, self.manual_control_input_callback)
+
+        # Create a subscriber to listen for the robot transformation
+        # Subscriber('/arm/state', ManipulatorState, self.get_robot_transformation)
+
         # Create publishers and subscribers to tune the PID controllers
         Subscriber(CONTROLLER_SELECTOR, UInt8, self.set_selected_controller_callback)
         Subscriber(P_GAIN_SETTING, Float64, self.set_p_gain_callback)
@@ -212,14 +223,11 @@ class RobotControlNode(BasicNode):
 
         # Ensure that the transformation matrix to the end effector exists before using it
         if self.o_t_ee is not None:
-            # Calculate the control inputs relative to the base frame
-            y_lin_output_in_o_frame = self.get_rotation_matrix_of_pose() @ array([[0], [y_lin_output], [0]])
-
-            # Save the control inputs
+            # Update the corresponding control input
             self.image_based_control_input = [
-                y_lin_output_in_o_frame[0][0],  # x linear in end effector frame
-                y_lin_output_in_o_frame[1][0],  # y linear in end effector frame
-                y_lin_output_in_o_frame[2][0],  # z linear in end effector frame
+                0,  # x linear in end effector frame
+                y_lin_output,  # y linear in end effector frame
+                0,  # z linear in end effector frame
                 0,  # x angular in end effector frame
                 0,  # y angular in end effector frame
                 0,  # z angular in end effector frame
@@ -272,14 +280,11 @@ class RobotControlNode(BasicNode):
 
             # Ensure that the transformation matrix to the end effector exists before using it
             if self.o_t_ee is not None:
-                # Transform the output from the end effector frame to the origin frame
-                lin_input_in_o_frame = self.get_rotation_matrix_of_pose() @ array([[0], [0], [z_lin_input]])
-
-                # Save the control inputs for use in the main loop
+                # Update the control inputs for use in the main loop
                 self.force_based_control_input = [
-                    lin_input_in_o_frame[0][0],  # x linear in end effector frame
-                    lin_input_in_o_frame[1][0],  # y linear in end effector frame
-                    lin_input_in_o_frame[2][0],  # z linear in end effector frame
+                    0,  # x linear in end effector frame
+                    0,  # y linear in end effector frame
+                    z_lin_input,  # z linear in end effector frame
                     0,  # x angular in end effector frame
                     0,  # y angular in end effector frame
                     0,  # z angular in end effector frame
@@ -310,14 +315,11 @@ class RobotControlNode(BasicNode):
             self.position_based_control_input_publisher.publish(self.create_twist_stamped_from_list([x_lin_output, 0, 0,
                                                                                                      0, 0, 0]))
 
-            # Transform the output from the end effector frame to the origin frame
-            x_lin_output_in_o_frame = self.get_rotation_matrix_of_pose() @ array([[x_lin_output], [0], [0]])
-
             # Update the position based control input
             self.position_based_control_input = [
-                x_lin_output_in_o_frame[0][0],  # x linear
-                x_lin_output_in_o_frame[1][0],  # y linear
-                x_lin_output_in_o_frame[2][0],  # z linear
+                x_lin_output,  # x linear
+                0,  # y linear
+                0,  # z linear
                 0,  # x angular
                 0,  # y angular
                 0,  # z angular
@@ -357,35 +359,51 @@ class RobotControlNode(BasicNode):
 
         # Ensure that the transformation matrix to the end effector exists before using it
         if self.o_t_ee is not None:
-            # Calculate the control inputs relative to the base frame
-            x_ang_output_in_o_frame = self.get_rotation_matrix_of_pose() @ array([[x_ang_output], [0], [0]])
-
-            # Save the control inputs
+            # Update the appropriate control input
             self.patient_contact_based_control_input = [
                 0,  # x linear in end effector frame
                 0,  # y linear in end effector frame
                 0,  # z linear in end effector frame
-                x_ang_output_in_o_frame[0][0],  # x angular in end effector frame
-                x_ang_output_in_o_frame[1][0],  # y angular in end effector frame
-                x_ang_output_in_o_frame[2][0],  # z angular in end effector frame
+                x_ang_output,  # x angular in end effector frame
+                0,  # y angular in end effector frame
+                0,  # z angular in end effector frame
             ]
 
     def experimental_noise_calculation(self, msg: TwistStamped) -> None:
 
         # Only compute if the robot pose is known
         if self.o_t_ee is not None:
-            # Compute the output in the origin frame
-            y_lin_output_in_o_frame = self.get_rotation_matrix_of_pose() @ array([[0], [msg.twist.linear.y], [0]])
-
             # Update the proper control input
             self.experimental_noise_control_input = [
-                y_lin_output_in_o_frame[0][0],  # x linear in end effector frame
-                y_lin_output_in_o_frame[1][0],  # y linear in end effector frame
-                y_lin_output_in_o_frame[2][0],  # z linear in end effector frame
+                0,  # x linear in end effector frame
+                msg.twist.linear.y,  # y linear in end effector frame
+                0,  # z linear in end effector frame
                 0,  # x angular in end effector frame
                 0,  # y angular in end effector frame
                 0,  # z angular in end effector frame
             ]
+
+    def manual_control_input_callback(self, msg: TwistStamped) -> None:
+
+        # Only compute if the robot pose is known
+        if self.o_t_ee is not None:
+
+            # Create a default input
+            self.manual_control_input = [0,  # x linear in end effector frame
+                                         0,  # y linear in end effector frame
+                                         0,  # z linear in end effector frame
+                                         0,  # x angular in end effector frame
+                                         msg.twist.angular.y,  # y angular in end effector frame
+                                         msg.twist.angular.z,  # z angular in end effector frame
+            ]
+
+            # Only add the linear x input if pose feedback is not being used
+            if not self.use_pose_feedback_flag:
+                self.manual_control_input[0] = msg.twist.linear.x
+
+            # Only add the linear y input if image feedback is not being used
+            if not self.use_image_feedback_flag:
+                self.manual_control_input[1] = msg.twist.linear.y
 
     # endregion
     ##########################
@@ -447,6 +465,8 @@ class RobotControlNode(BasicNode):
 
         # Otherwise clear the trajectory and the current set point
         else:
+            if self.current_trajectory is not None:
+                self.trajectory_complete_publisher.publish(Bool(True))
             self.current_trajectory = None
             self.current_trajectory_set_point = None
             self.linear_x_controller.update_set_point(None)
@@ -760,6 +780,9 @@ class RobotControlNode(BasicNode):
         # Add the control input from the noise-maker
         control_input_array = control_input_array + self.experimental_noise_control_input
 
+        # Add the control input from the manual control
+        control_input_array = control_input_array + self.manual_control_input
+
         # Publish the in_use flags
         self.position_based_controller_use_publisher.publish(Bool(self.use_pose_feedback_flag))
         self.force_based_controller_use_publisher.publish(Bool(self.use_force_feedback_flag))
@@ -777,6 +800,7 @@ class RobotControlNode(BasicNode):
 
         # Create a message and fill it with the desired control input
         control_input_message = TwistStamped()
+        control_input_message.header.frame_id = 'panda_EE'
         control_input_message.twist.linear.x = control_input_array[0]
         control_input_message.twist.linear.y = control_input_array[1]
         control_input_message.twist.linear.z = control_input_array[2]
