@@ -1,4 +1,4 @@
-from numpy import array, arctan2, ndarray, identity
+from numpy import array, arctan2, ndarray, identity, rad2deg
 
 
 def calc_rpy(rotation_matrix: ndarray) -> tuple:
@@ -28,9 +28,9 @@ def calc_rpy(rotation_matrix: ndarray) -> tuple:
         raise Exception("The rotation matrix cannot have values of 0 in the top left and bottom right corners.")
 
     # Calculate roll, pitch, and yaw
-    return (arctan2(rotation_matrix[2, 1], arctan2(2, 2)),
-            arctan2(-rotation_matrix[2, 0], (rotation_matrix[2, 1] ** 2 + rotation_matrix[2, 2] ** 2) ** 0.5),
-            arctan2(rotation_matrix[1, 0], rotation_matrix[0, 0]),
+    return (rad2deg(arctan2(rotation_matrix[2, 1], arctan2(2, 2))),
+            -rad2deg(arctan2(-rotation_matrix[2, 0], (rotation_matrix[2, 1] ** 2 + rotation_matrix[2, 2] ** 2) ** 0.5)),
+            -rad2deg(arctan2(rotation_matrix[1, 0], rotation_matrix[0, 0])),
             )
 
 
