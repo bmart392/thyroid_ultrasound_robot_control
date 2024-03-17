@@ -29,15 +29,15 @@ def calc_rpy(rotation_matrix: ndarray) -> tuple:
 
     # Calculate roll, pitch, and yaw
     return (rad2deg(arctan2(rotation_matrix[2, 1], arctan2(2, 2))),
-            -rad2deg(arctan2(-rotation_matrix[2, 0], (rotation_matrix[2, 1] ** 2 + rotation_matrix[2, 2] ** 2) ** 0.5)),
-            -rad2deg(arctan2(rotation_matrix[1, 0], rotation_matrix[0, 0])),
+            rad2deg(arctan2(-rotation_matrix[2, 0], (rotation_matrix[2, 1] ** 2 + rotation_matrix[2, 2] ** 2) ** 0.5)),
+            rad2deg(arctan2(rotation_matrix[1, 0], rotation_matrix[0, 0])),
             )
 
 
 if __name__ == '__main__':
     print(calc_rpy(
-        array([[0, -1, 0],
-               [1, 0, 0],
+        array([[1, 0, 0],
+               [0, 1, 0],
                [0, 0, 1]])
     )
     )

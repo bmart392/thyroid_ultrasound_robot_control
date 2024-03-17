@@ -1,5 +1,5 @@
 from math import cos, sin
-from numpy import array, ndarray
+from numpy import array, ndarray, deg2rad
 
 
 def calc_transformation_from_rpy(xyz: tuple, rpy: tuple) -> ndarray:
@@ -18,12 +18,12 @@ def calc_transformation_from_rpy(xyz: tuple, rpy: tuple) -> ndarray:
         An array containing a homogeneous transformation matrix.
     """
     # Define variables for clarity
-    c_g = cos(rpy[0])
-    c_b = cos(rpy[1])
-    c_a = cos(rpy[2])
-    s_g = sin(rpy[0])
-    s_b = sin(rpy[1])
-    s_a = sin(rpy[2])
+    c_g = cos(deg2rad(rpy[0]))
+    c_b = cos(deg2rad(rpy[1]))
+    c_a = cos(deg2rad(rpy[2]))
+    s_g = sin(deg2rad(rpy[0]))
+    s_b = sin(deg2rad(rpy[1]))
+    s_a = sin(deg2rad(rpy[2]))
     return array([
         [c_a * c_b, c_a * s_b * s_g - s_a * c_g, c_a * s_b * c_g + s_a * s_g, xyz[0]],
         [s_a * c_b, s_a * s_b * s_g + c_a * c_g, s_a * s_b * c_g - c_a * s_g, xyz[1]],
