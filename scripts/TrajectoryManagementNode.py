@@ -161,7 +161,7 @@ class TrajectoryManagementNode(BasicNode):
 
             # Define the distance to travel and the number of points to generate along the way
             travel_distance = req.value
-            min_distance_between_registered_scans = 2  # millimeters
+            min_distance_between_registered_scans = 1  # millimeters
             min_distance_between_registered_scans = min_distance_between_registered_scans / 1000  # converted to meters
             num_points = abs(round(travel_distance / min_distance_between_registered_scans))
 
