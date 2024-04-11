@@ -37,6 +37,9 @@ class TrajectoryManagementNode(BasicNode):
         self.trajectory = None
         self.current_trajectory_set_point = None
 
+        # Define the default spacing for trajectories
+        self.min_distance_between_registered_scans = 1  # millimeters
+
         # Define flag variables
         self.is_patient_in_contact = False
         self.trajectory_waypoint_reached = False
@@ -81,6 +84,7 @@ class TrajectoryManagementNode(BasicNode):
 
         # Define trajectory management services
         Service(TM_CREATE_TRAJECTORY, Float64Request, self.create_trajectory_handler)
+        Service(TM_SET_TRAJECTORY_SPACING, Float64Request, self.set_trajectory_spacing_handler)
         Service(TM_CLEAR_TRAJECTORY, BoolRequest, self.clear_trajectory_handler)
         Service(TM_DATA_HAS_BEEN_REGISTERED, BoolRequest, self.data_has_been_registered_handler)
 
@@ -160,10 +164,8 @@ class TrajectoryManagementNode(BasicNode):
         if self.current_pose is not None:
 
             # Define the distance to travel and the number of points to generate along the way
-            travel_distance = req.value
-            min_distance_between_registered_scans = 1  # millimeters
-            min_distance_between_registered_scans = min_distance_between_registered_scans / 1000  # converted to meters
-            num_points = abs(round(travel_distance / min_distance_between_registered_scans))
+            # Also convert the distance between scans to millimeters before using it
+            num_points = abs(round(req.value / (self.min_distance_between_registered_scans / 1000)))
 
             # Save a copy of the robot pose transformation to use to ensure data is not overwritten in the process
             local_pose_transformation = copy(self.current_pose)
@@ -177,9 +179,9 @@ class TrajectoryManagementNode(BasicNode):
 
             # Create linear vectors on each plane between the current position and a distance in the x-axis containing
             # a given number of points
-            trajectory = array([linspace(start=array([0, 0, 0]), stop=array([travel_distance, 0, 0]), num=num_points),
-                                linspace(start=array([0, 1, 0]), stop=array([travel_distance, 1, 0]), num=num_points),
-                                linspace(start=array([0, 0, 1]), stop=array([travel_distance, 0, 1]), num=num_points)])
+            trajectory = array([linspace(start=array([0, 0, 0]), stop=array([req.value, 0, 0]), num=num_points),
+                                linspace(start=array([0, 1, 0]), stop=array([req.value, 1, 0]), num=num_points),
+                                linspace(start=array([0, 0, 1]), stop=array([req.value, 0, 1]), num=num_points)])
 
             # Transform each point coordinate into the origin frame of the robot
             ii = 0
@@ -211,6 +213,11 @@ class TrajectoryManagementNode(BasicNode):
             return Float64RequestResponse(was_succesful=True, message=NO_ERROR)
 
         return Float64RequestResponse(was_succesful=False, message="No known robot pose")
+
+    # Define the service for setting the image spacing
+    def set_trajectory_spacing_handler(self, req: Float64RequestRequest):
+        self.min_distance_between_registered_scans = req.value
+        return Float64RequestResponse(was_succesful=True, message=NO_ERROR)
 
     # Define service for clearing trajectory
     def clear_trajectory_handler(self, req: BoolRequestRequest):
