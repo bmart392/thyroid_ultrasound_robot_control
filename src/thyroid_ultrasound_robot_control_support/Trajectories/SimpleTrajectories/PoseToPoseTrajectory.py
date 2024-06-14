@@ -13,7 +13,7 @@ class PoseToPoseTrajectory(SimpleTrajectory):
 
     def __init__(self, distance_between_way_points: float,
                  starting_pose: array,
-                 ending_pose: array = None,
+                 ending_pose: array,
                  generate_trajectory_on_call: bool = True):
 
         # Define the ending offset needed to make the trajectory

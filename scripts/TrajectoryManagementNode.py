@@ -22,6 +22,7 @@ from thyroid_ultrasound_services.srv import *
 from thyroid_ultrasound_robot_control_support.Helpers.convert_pose_to_transform_matrix import \
     convert_pose_to_transform_matrix
 from thyroid_ultrasound_robot_control_support.Helpers.calc_rpy import calc_rpy
+from thyroid_ultrasound_support.Constants.SharedConstants import REST_PHASE, GROWTH_PHASE
 
 
 class TrajectoryManagementNode(BasicNode):
@@ -51,6 +52,8 @@ class TrajectoryManagementNode(BasicNode):
         self.is_trajectory_paused = False
         self.data_registration_was_requested = False
         self.data_has_been_registered = False
+        self.has_stabilization_been_requested = False
+        self.has_segmentation_stabilized = False
 
         # Define override flag variables
         self.is_patient_in_contact_override = False
@@ -93,6 +96,10 @@ class TrajectoryManagementNode(BasicNode):
         self.set_trajectory_yaw_service = ServiceProxy(RC_SET_TRAJECTORY_YAW, Float64Request)
         self.set_next_waypoint_service = ServiceProxy(RC_SET_NEXT_WAYPOINT, Float64MultiArrayRequest)
         self.clear_current_set_points_service = ServiceProxy(RC_CLEAR_CURRENT_SET_POINTS, BoolRequest)
+
+        # Define real-time segmentation service proxies
+        self.set_segmentation_phase_service = ServiceProxy(RTS_SET_SEGMENTATION_PHASE, StringRequest)
+        self.has_segmentation_stabilized_service = ServiceProxy(RTS_HAS_SEGMENTATION_STABILIZED, ActionRequest)
 
         # Define image data registration service proxy
         self.register_new_data_service = ServiceProxy(IPR_REGISTER_NEW_DATA, BoolRequest)
@@ -295,7 +302,31 @@ class TrajectoryManagementNode(BasicNode):
                         (self.is_image_centered or self.is_image_centered_override) and \
                         not self.is_trajectory_paused and self.trajectory_waypoint_reached:
 
-                    if not self.data_registration_was_requested:
+                    # If the segmentation has not been requested to stabilize
+                    if not self.has_stabilization_been_requested:
+
+                        # Request the segmentation stabilize
+                        resp = self.set_segmentation_phase_service(REST_PHASE)
+
+                        # Save the status of the request
+                        self.has_stabilization_been_requested = resp.was_succesful
+
+                    # If the segmentation has not stabilized
+                    elif not self.has_segmentation_stabilized:
+
+                        # Request an update on the status of the stabilization
+                        resp = self.has_segmentation_stabilized_service()
+
+                        # Save the status of the request
+                        self.has_segmentation_stabilized = resp.was_succesful
+
+                        # If it has not stabilized
+                        if not self.has_segmentation_stabilized:
+
+                            # Sleep for 0.25 seconds
+                            sleep(0.25)
+
+                    elif not self.data_registration_was_requested:
 
                         # Request to register data
                         resp = self.register_new_data_service(True)
@@ -303,9 +334,16 @@ class TrajectoryManagementNode(BasicNode):
                         self.data_registration_was_requested = resp.was_succesful
 
                     elif self.data_has_been_registered:
+
                         # Send the waypoint
                         self.update_current_trajectory_set_point()
 
+                        # Set the segmentation back to growth mode
+                        self.set_segmentation_phase_service(GROWTH_PHASE)
+
+                        # Reset the other flags
+                        self.has_segmentation_stabilized = False
+                        self.has_stabilization_been_requested = False
                         self.data_has_been_registered = False
                         self.data_registration_was_requested = False
 

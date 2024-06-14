@@ -57,6 +57,7 @@ class Trajectory:
         None
             The first way-point in the trajectory.
         """
+        raise Exception("This function has not been implemented.")
 
     def clear(self) -> None:
         """
