@@ -23,6 +23,8 @@ from thyroid_ultrasound_robot_control_support.Helpers.convert_pose_to_transform_
     convert_pose_to_transform_matrix
 from thyroid_ultrasound_robot_control_support.Helpers.calc_rpy import calc_rpy
 from thyroid_ultrasound_support.Constants.SharedConstants import REST_PHASE, GROWTH_PHASE
+from thyroid_ultrasound_robot_control_support.Trajectories.SimpleTrajectories.TranslationTrajectory import TranslationTrajectory
+from thyroid_ultrasound_robot_control_support.Trajectories import Trajectory
 
 
 class TrajectoryManagementNode(BasicNode):
@@ -33,6 +35,9 @@ class TrajectoryManagementNode(BasicNode):
 
         # Define variable to store for the current pose of the robot
         self.current_pose = None
+
+        # Define a variable to store the trajectory as a child of the Trajectory class
+        self.current_trajectory_object: Trajectory = None
 
         # Define a variable to store the trajectory
         self.trajectory = None
@@ -54,6 +59,7 @@ class TrajectoryManagementNode(BasicNode):
         self.data_has_been_registered = False
         self.has_stabilization_been_requested = False
         self.has_segmentation_stabilized = False
+        self.complete_trajectory_without_registering_data = False
 
         # Define override flag variables
         self.is_patient_in_contact_override = False
@@ -89,6 +95,7 @@ class TrajectoryManagementNode(BasicNode):
         Service(TM_CREATE_TRAJECTORY, Float64Request, self.create_trajectory_handler)
         Service(TM_SET_TRAJECTORY_SPACING, Float64Request, self.set_trajectory_spacing_handler)
         Service(TM_CLEAR_TRAJECTORY, BoolRequest, self.clear_trajectory_handler)
+        Service(TM_COMPLETE_TRAJECTORY_WITHOUT_DATA, BoolRequest, self.complete_trajectory_without_data)
         Service(TM_DATA_HAS_BEEN_REGISTERED, BoolRequest, self.data_has_been_registered_handler)
 
         # Define robot control service proxies
@@ -236,6 +243,11 @@ class TrajectoryManagementNode(BasicNode):
             self.clear_current_set_points_service(True)
         return BoolRequestResponse(was_succesful=True, message=NO_ERROR)
 
+    # Define the service for completing a trajectory without registering data
+    def complete_trajectory_without_data(self, req: BoolRequestRequest):
+        self.complete_trajectory_without_registering_data = req.value
+        return BoolRequestResponse(was_succesful=True, message=NO_ERROR)
+
     # Define service for pausing the trajectory
     def pause_trajectory(self, req: BoolRequestRequest):
         self.is_trajectory_paused = req.value
@@ -290,17 +302,28 @@ class TrajectoryManagementNode(BasicNode):
 
     def main_loop(self):
 
-        # if a trajectory exists
-        if self.trajectory is not None:
-            if self.current_trajectory_set_point is not None:
+        # Define the default status message
+        new_status = None
+
+        # Check that the robot pose is known
+        if self.current_pose is not None:
+
+            new_status = NO_TRAJECTORY_EXISTS
+
+            # if a trajectory exists
+            if self.trajectory is not None and self.current_trajectory_set_point is not None:
+
+                new_status = WAYPOINT_NOT_REACHED
 
                 # If the state is correct to register data and move on to the next waypoint
-                if self.current_pose is not None and self.trajectory is not None and \
+                if self.current_pose is not None and \
                         (self.is_patient_in_contact or self.is_patient_in_contact_override) and \
                         (self.is_proper_force_applied or self.is_proper_force_applied_override) and \
                         (self.is_image_balanced or self.is_image_balanced_override) and \
                         (self.is_image_centered or self.is_image_centered_override) and \
                         not self.is_trajectory_paused and self.trajectory_waypoint_reached:
+
+                    new_status = WAYPOINT_REACHED
 
                     # If the segmentation has not been requested to stabilize
                     if not self.has_stabilization_been_requested:
@@ -326,6 +349,14 @@ class TrajectoryManagementNode(BasicNode):
                             # Sleep for 0.25 seconds
                             sleep(0.25)
 
+                    elif self.complete_trajectory_without_registering_data:
+
+                        # Skip the request to register data step
+                        self.data_registration_was_requested = True
+
+                        # Override that data has been registered
+                        self.data_has_been_registered = True
+
                     elif not self.data_registration_was_requested:
 
                         # Request to register data
@@ -346,6 +377,8 @@ class TrajectoryManagementNode(BasicNode):
                         self.has_stabilization_been_requested = False
                         self.data_has_been_registered = False
                         self.data_registration_was_requested = False
+
+        self.publish_node_status(new_status=new_status, delay_publishing=0.5, default_status=ROBOT_POSE_UNKNOWN)
 
 
 if __name__ == '__main__':
