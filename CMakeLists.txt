@@ -11,7 +11,6 @@ find_package(catkin REQUIRED COMPONENTS
   actionlib
   geometry_msgs
   rospy
-  rv_msgs
   std_msgs
   franka_msgs
   roslaunch
@@ -110,7 +109,7 @@ catkin_python_setup()
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES thyroid_ultrasound_robot_control
-   CATKIN_DEPENDS actionlib geometry_msgs rospy rv_msgs std_msgs
+   CATKIN_DEPENDS actionlib geometry_msgs rospy std_msgs
 #  DEPENDS system_lib
 )
 
