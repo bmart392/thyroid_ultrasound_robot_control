@@ -2,8 +2,14 @@
 
 <launch>
 	
+	<!-- Define an arguement for the launch file -->
+	<arg name="simulate_robot"/>
+	
 	<!-- start the robot control node -->
-	<node name="RobotControlNode" pkg="thyroid_ultrasound_robot_control" type="RobotControlNode.py"/>
+	<node name="RobotControlNode" pkg="thyroid_ultrasound_robot_control" type="RobotControlNode.py" if="$(eval not arg('simulate_robot'))"/>
+	
+	<!-- start the robot control node -->
+	<node name="RobotControlNode" pkg="thyroid_ultrasound_robot_control" type="RobotControlNode.py" args="--simulate_robot" if="$(eval arg('simulate_robot'))"/>
 	
 	<!-- start the trajectory management node -->
 	<node name="TrajectoryManagamentNode" pkg="thyroid_ultrasound_robot_control" type="TrajectoryManagementNode.py"/>

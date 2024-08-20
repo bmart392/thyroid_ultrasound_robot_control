@@ -16,6 +16,7 @@ from armer_msgs.msg import ManipulatorState
 # Import standard packages
 from numpy import zeros, array, median, append, arange
 from scipy.spatial.transform import Rotation
+from argparse import ArgumentParser
 
 # Import custom ROS packages
 from thyroid_ultrasound_messages.msg import Float64Stamped, ControllerStatus
@@ -38,6 +39,16 @@ class RobotControlNode(BasicNode):
 
         # Add call to super class init
         super().__init__()
+
+        # Allow an argument to be passed to the code that determines which mode is being used
+        parser = ArgumentParser()
+        parser.add_argument("--simulate_robot", "--sr", dest="simulate_robot", action="store_true", default=False,
+                            help="Simulates force readings from robot when robot is being simulated")
+        parser.add_argument("__name", default="")
+        parser.add_argument("__log", default="")
+
+        # Parse the arguments passed to the code
+        passed_arguments = parser.parse_args()
 
         # Define the max speed allowed for any linear control input
         self.lin_max_speed = 0.05  # m/s
@@ -94,6 +105,7 @@ class RobotControlNode(BasicNode):
 
         # Define override variables
         self.override_contact_with_patient = False
+        self.simulate_robot_force_readings = passed_arguments.simulate_robot
 
         # Define variables to store commands sent by the controller
         self.use_image_feedback_flag = False
@@ -204,7 +216,14 @@ class RobotControlNode(BasicNode):
                 self.force_history[index] = dimension[1:]
 
         # Add in the new force value for each dimension
-        self.force_history[2] = append(self.force_history[2], msg.wrench.force.z)
+        if self.simulate_robot_force_readings:
+            if self.linear_z_controller.set_point is not None:
+                new_force_reading = self.linear_z_controller.set_point
+            else:
+                new_force_reading = 0
+        else:
+            new_force_reading = msg.wrench.force.z
+        self.force_history[2] = append(self.force_history[2], new_force_reading)
 
         # Average the force history to find a more consistent force value
         self.newest_force_reading[2] = round(float(median(self.force_history[2])), 3)
@@ -217,6 +236,9 @@ class RobotControlNode(BasicNode):
         Pull the transformation matrix out of the message then calculate the control input based on the robot pose.
         """
         self.o_t_ee = convert_pose_to_transform_matrix(msg.ee_pose.pose)
+
+        if self.simulate_robot_force_readings:
+            self.robot_force_callback(msg.ee_wrench)
 
     # endregion
     ############################
@@ -527,7 +549,8 @@ class RobotControlNode(BasicNode):
 
         # Create a message and fill it with the desired control input
         control_input_message = TwistStamped()
-        control_input_message.header.frame_id = 'fr3_EE'
+        # TODO - High - The line below this will need to be changed for the use with the real robot
+        control_input_message.header.frame_id = 'fr3_raster'  # 'fr3_EE'
         control_input_message.twist.linear.x = control_input_array[0]
         control_input_message.twist.linear.y = control_input_array[1]
         control_input_message.twist.linear.z = control_input_array[2]
