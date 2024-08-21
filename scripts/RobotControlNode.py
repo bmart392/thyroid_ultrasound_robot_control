@@ -63,7 +63,7 @@ class RobotControlNode(BasicNode):
                                                      i_gain=0.0000)  # x linear, position-based, error = meters
         self.linear_y_controller = BasicController(p_gain=0.0000500, error_tolerance=15,  # 0.1, 0.0002, 0.000, 0.000
                                                    d_gain=0.000, i_gain=.000,
-                                                   set_point=0.)  # y linear, image-based, error = meters
+                                                   set_point=0.)  # y linear, image-based, error = pixels
         self.linear_z_controller = BasicController(p_gain=0.01, error_tolerance=0.05,  # 0.011, 0.1, 0.75, 0.000
                                                    d_gain=0.005, i_gain=0.000,
                                                    max_output=0.02)  # z linear, force-based, error = Newtons
