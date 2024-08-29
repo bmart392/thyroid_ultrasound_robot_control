@@ -11,13 +11,21 @@ from numpy import array, ndarray, zeros
 from thyroid_ultrasound_robot_control_support.Controllers.FeatureBasedController.FeatureConstants import *
 from thyroid_ultrasound_robot_control_support.Helpers.calc_inverse import calc_inverse
 from thyroid_ultrasound_robot_control_support.Helpers.calc_rpy import calc_rpy
+from thyroid_ultrasound_support.MessageConversion.convert_array_to_float64_multi_array_message import \
+    convert_array_to_float64_multi_array_message
+from thyroid_ultrasound_support.MessageConversion.convert_float64_multi_array_message_to_array import \
+    convert_float64_multi_array_message_to_array
+
+# Import custom ROS packages
+from thyroid_ultrasound_messages.msg import FeatureObjectMsg
 
 
 class Feature:
 
     def __init__(self, defining_pose: array = None,
                  translational_locked_axes: tuple = (X_LOCKED, Y_LOCKED, Z_LOCKED),
-                 rotational_locked_axes: tuple = (ROLL_LOCKED, PITCH_LOCKED, YAW_LOCKED)):
+                 rotational_locked_axes: tuple = (ROLL_LOCKED, PITCH_LOCKED, YAW_LOCKED),
+                 feature_as_msg: FeatureObjectMsg = None):
         """
         Create a feature using a given pose and the axes, both translational and rotational, which should be controlled.
 
@@ -31,26 +39,43 @@ class Feature:
             A tuple of constants signifying along which rotational distance is calculated.
         """
 
-        # Ensure that the given pose is an array
-        if type(defining_pose) != ndarray:
-            defining_pose = array(defining_pose)
+        # If a message of the correct type is provided, use the message to build the object
+        if feature_as_msg is not None and type(feature_as_msg) == FeatureObjectMsg:
 
-        # Ensure the current pose is the correct shape
-        if defining_pose.shape != TRANSFORM_MATRIX:
-            raise Exception("The shape of the of the current pose, " + str(defining_pose.shape) +
-                            ", is not " + str(TRANSFORM_MATRIX) + ".")
+            # Pull the pose matrix out of the message
+            self.defining_pose_matrix = convert_float64_multi_array_message_to_array(feature_as_msg.origin)
 
-        # Save the pose used to define the feature
-        self.defining_pose_matrix = defining_pose
+            # Pull out the status of each translational axis
+            self.translational_locked_axes = (feature_as_msg.lin_x_status, feature_as_msg.lin_y_status,
+                                              feature_as_msg.lin_z_status)
+
+            # Pull out the status of each rotational axis
+            self.rotational_locked_axes = (feature_as_msg.ang_x_status, feature_as_msg.ang_y_status,
+                                           feature_as_msg.ang_z_status)
+
+        # Otherwise use the other data provided,
+        else:
+
+            # Ensure that the given pose is an array
+            if type(defining_pose) != ndarray:
+                defining_pose = array(defining_pose)
+
+            # Ensure the current pose is the correct shape
+            if defining_pose.shape != TRANSFORM_MATRIX:
+                raise Exception("The shape of the of the current pose, " + str(defining_pose.shape) +
+                                ", is not " + str(TRANSFORM_MATRIX) + ".")
+
+            # Save the pose used to define the feature
+            self.defining_pose_matrix = defining_pose
+
+            # Define which translational axes for the axis will be locked
+            self.translational_locked_axes = translational_locked_axes
+
+            # Define which rotational axes for the feature will be locked
+            self.rotational_locked_axes = rotational_locked_axes
 
         # Calculate the matrix needed to find the error between any pose and the defining pose
         self.inverse_defining_pose_matrix = calc_inverse(defining_pose)
-
-        # Define which translational axes for the axis will be locked
-        self.translational_locked_axes = translational_locked_axes
-
-        # Define which rotational axes for the feature will be locked
-        self.rotational_locked_axes = rotational_locked_axes
 
     def distance_to_feature(self, pose_to_measure_against: array) -> dict:
         """
@@ -119,6 +144,24 @@ class Feature:
         return {TRANSLATION_ERROR_WRT_FEATURE: translation_error,
                 TRANSLATION_ERROR_WRT_ORIGIN: self.defining_pose_matrix[0:3, 0:3] @ translation_error,
                 ROTATIONAL_ERROR: rotation_error}
+
+    def to_msg(self) -> FeatureObjectMsg:
+        """Creates a FeatureObjectMsg from the data stored within the object"""
+
+        # Create a new empty object to return
+        new_msg = FeatureObjectMsg()
+
+        # Fill in the data for the object
+        new_msg.origin = convert_array_to_float64_multi_array_message(self.defining_pose_matrix)
+        new_msg.lin_x_status = self.translational_locked_axes[0]
+        new_msg.lin_y_status = self.translational_locked_axes[1]
+        new_msg.lin_z_status = self.translational_locked_axes[2]
+        new_msg.ang_x_status = self.rotational_locked_axes[0]
+        new_msg.ang_y_status = self.rotational_locked_axes[1]
+        new_msg.ang_z_status = self.rotational_locked_axes[2]
+
+        # Return the message
+        return new_msg
 
 
 if __name__ == '__main__':

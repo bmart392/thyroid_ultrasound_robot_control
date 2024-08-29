@@ -195,6 +195,7 @@ class RobotControlNode(BasicNode):
         Service(RC_SET_TRAJECTORY_YAW, Float64Request, self.set_trajectory_yaw_handler)
         Service(RC_SET_NEXT_WAYPOINT, Float64MultiArrayRequest, self.set_next_waypoint_handler)
         Service(RC_CLEAR_CURRENT_SET_POINTS, BoolRequest, self.clear_current_set_points_handler)
+        Service(RC_SET_NEXT_FEATURE_WAYPOINT, TrajectoryWaypoint, self.set_next_feature_waypoint_handler())
 
         # Define service controlling the publishing of controller statuses
         Service(RC_PUBLISH_CONTROLLER_STATUSES, BoolRequest, self.publish_controller_statuses_handler)
@@ -352,7 +353,7 @@ class RobotControlNode(BasicNode):
     def set_next_waypoint_handler(self, msg: Float64MultiArrayRequestRequest):
 
         # Publish the message
-        self.position_goal_surface_publisher.publish()
+        self.position_goal_surface_publisher.publish(msg.next_waypoint)
 
         # Create a new surface based on the given vertices and set that surface as the set-point for the controller
         self.linear_x_controller.update_set_point(
@@ -379,6 +380,9 @@ class RobotControlNode(BasicNode):
             self.angular_z_controller.update_set_point(None)
 
         return BoolRequestResponse(True, NO_ERROR)
+
+    def set_next_feature_waypoint_handler(self, req: TrajectoryWaypointRequest):
+        return TrajectoryWaypointResponse(True, NO_ERROR)
 
     def publish_controller_statuses_handler(self, req: BoolRequestRequest):
         self.publish_controller_statuses = req.value

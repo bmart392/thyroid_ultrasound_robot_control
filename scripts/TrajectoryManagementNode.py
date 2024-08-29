@@ -3,8 +3,6 @@
 """
 File containing the TrajectoryManagementNode class.
 """
-# TODO - Dream - Add proper logging through the BasicNode Class
-# TODO - Dream - Add proper exceptions for everything
 
 # Import standard ROS packages
 from armer_msgs.msg import ManipulatorState
@@ -23,8 +21,11 @@ from thyroid_ultrasound_robot_control_support.Helpers.convert_pose_to_transform_
     convert_pose_to_transform_matrix
 from thyroid_ultrasound_robot_control_support.Helpers.calc_rpy import calc_rpy
 from thyroid_ultrasound_support.Constants.SharedConstants import REST_PHASE, GROWTH_PHASE
-from thyroid_ultrasound_robot_control_support.Trajectories.SimpleTrajectories.TranslationTrajectory import TranslationTrajectory
+from thyroid_ultrasound_robot_control_support.Trajectories.SimpleTrajectories.TranslationTrajectory import \
+    TranslationTrajectory
 from thyroid_ultrasound_robot_control_support.Trajectories import Trajectory
+from thyroid_ultrasound_support.MessageConversion.convert_array_to_float64_multi_array_message import \
+    convert_array_to_float64_multi_array_message
 
 
 class TrajectoryManagementNode(BasicNode):
@@ -38,6 +39,7 @@ class TrajectoryManagementNode(BasicNode):
 
         # Define a variable to store the trajectory as a child of the Trajectory class
         self.current_trajectory_object: Trajectory = None
+        self.translation_trajectory_object: TranslationTrajectory = None
 
         # Define a variable to store the trajectory
         self.trajectory = None
@@ -103,6 +105,7 @@ class TrajectoryManagementNode(BasicNode):
         self.set_trajectory_yaw_service = ServiceProxy(RC_SET_TRAJECTORY_YAW, Float64Request)
         self.set_next_waypoint_service = ServiceProxy(RC_SET_NEXT_WAYPOINT, Float64MultiArrayRequest)
         self.clear_current_set_points_service = ServiceProxy(RC_CLEAR_CURRENT_SET_POINTS, BoolRequest)
+        self.set_next_feature_waypoint_service = ServiceProxy(RC_SET_NEXT_FEATURE_WAYPOINT, TrajectoryWaypoint)
 
         # Define real-time segmentation service proxies
         self.set_segmentation_phase_service = ServiceProxy(RTS_SET_SEGMENTATION_PHASE, StringRequest)
@@ -113,6 +116,11 @@ class TrajectoryManagementNode(BasicNode):
 
         # Define the user interface proxies
         self.trajectory_complete_service = ServiceProxy(UI_TRAJECTORY_COMPLETE, BoolRequest)
+
+        # Save the current time as the last time an image was published
+        self.time_of_last_publishing = Time.now()
+
+        self.log_single_message('Node ready')
 
     # Define status subscribers
     # region
@@ -148,26 +156,56 @@ class TrajectoryManagementNode(BasicNode):
 
     def is_patient_in_contact_override_handler(self, req: BoolRequestRequest):
         self.is_patient_in_contact_override = req.value
+        if req.value:
+            status_msg = 'active'
+        else:
+            status_msg = 'inactive'
+        self.log_single_message('Patient contact override is ' + status_msg)
         return BoolRequestResponse(was_succesful=True, message=NO_ERROR)
 
     def is_proper_force_applied_override_handler(self, req: BoolRequestRequest):
         self.is_proper_force_applied_override = req.value
+        if req.value:
+            status_msg = 'active'
+        else:
+            status_msg = 'inactive'
+        self.log_single_message('Proper force applied override is ' + status_msg)
         return BoolRequestResponse(was_succesful=True, message=NO_ERROR)
 
     def is_image_balanced_override_handler(self, req: BoolRequestRequest):
         self.is_image_balanced_override = req.value
+        if req.value:
+            status_msg = 'active'
+        else:
+            status_msg = 'inactive'
+        self.log_single_message('Proper image balance override is ' + status_msg)
         return BoolRequestResponse(was_succesful=True, message=NO_ERROR)
 
     def is_image_centered_override_handler(self, req: BoolRequestRequest):
         self.is_image_centered_override = req.value
+        if req.value:
+            status_msg = 'active'
+        else:
+            status_msg = 'inactive'
+        self.log_single_message('Proper image centering override is ' + status_msg)
         return BoolRequestResponse(was_succesful=True, message=NO_ERROR)
 
     def registered_data_success_override_handler(self, req: BoolRequestRequest):
         self.registered_data_success_override = req.value
+        if req.value:
+            status_msg = 'active'
+        else:
+            status_msg = 'inactive'
+        self.log_single_message('Success of data registration override is ' + status_msg)
         return BoolRequestResponse(was_succesful=True, message=NO_ERROR)
 
     def data_has_been_registered_handler(self, req: BoolRequestRequest):
         self.data_has_been_registered = req.value
+        if req.value:
+            status_msg = ''
+        else:
+            status_msg = 'not '
+        self.log_single_message('Data has ' + status_msg + 'been registered')
         return BoolRequestResponse(was_succesful=True, message=NO_ERROR)
 
     # endregion
@@ -177,9 +215,14 @@ class TrajectoryManagementNode(BasicNode):
         # Do not try to create a trajectory unless the robot pose transformation is known
         if self.current_pose is not None:
 
+            self.translation_trajectory_object = TranslationTrajectory(
+                distance_between_way_points=self.min_distance_between_registered_scans,
+                starting_pose=copy(self.current_pose),
+                ending_offset_distance=array([req.value, 0, 0]))
+
             # Define the distance to travel and the number of points to generate along the way
             # Also convert the distance between scans to millimeters before using it
-            num_points = abs(round(req.value / (self.min_distance_between_registered_scans / 1000)))
+            num_points = abs(round(req.value / self.min_distance_between_registered_scans))
 
             # Save a copy of the robot pose transformation to use to ensure data is not overwritten in the process
             local_pose_transformation = copy(self.current_pose)
@@ -222,15 +265,20 @@ class TrajectoryManagementNode(BasicNode):
 
             # Set the current set point for the trajectory
             self.update_current_trajectory_set_point()
+            self.set_next_feature_waypoint_service(self.translation_trajectory_object.get_current().to_msg())
+
+            self.log_single_message('New trajectory created')
 
             # Send the response
             return Float64RequestResponse(was_succesful=True, message=NO_ERROR)
 
+        self.log_single_message('Trajectory could not be created because robot pose was not known')
         return Float64RequestResponse(was_succesful=False, message="No known robot pose")
 
     # Define the service for setting the image spacing
     def set_trajectory_spacing_handler(self, req: Float64RequestRequest):
         self.min_distance_between_registered_scans = req.value
+        self.log_single_message('New trajectory spacing set to ' + str(req.value) + ' meters')
         return Float64RequestResponse(was_succesful=True, message=NO_ERROR)
 
     # Define service for clearing trajectory
@@ -241,16 +289,27 @@ class TrajectoryManagementNode(BasicNode):
             self.current_trajectory_set_point = None
             # Clear the set points in the robot control node
             self.clear_current_set_points_service(True)
+            self.log_single_message('Current trajectory cleared')
         return BoolRequestResponse(was_succesful=True, message=NO_ERROR)
 
     # Define the service for completing a trajectory without registering data
     def complete_trajectory_without_data(self, req: BoolRequestRequest):
         self.complete_trajectory_without_registering_data = req.value
+        if req.value:
+            status_msg = 'without'
+        else:
+            status_msg = 'with'
+        self.log_single_message('Trajectories will be completed ' + status_msg + ' data registration')
         return BoolRequestResponse(was_succesful=True, message=NO_ERROR)
 
     # Define service for pausing the trajectory
     def pause_trajectory(self, req: BoolRequestRequest):
         self.is_trajectory_paused = req.value
+        if req.value:
+            status_msg = 'paused'
+        else:
+            status_msg = 'active'
+        self.log_single_message('Trajectory progress is ' + status_msg)
         return BoolRequestResponse(was_successful=True, message=NO_ERROR)
 
     def update_current_trajectory_set_point(self):
@@ -275,19 +334,21 @@ class TrajectoryManagementNode(BasicNode):
                                      ])
 
             # Create a new multi-dimension array message to transmit the goal surface information
-            current_trajectory_set_point_message = Float64MultiArray()
+            # current_trajectory_set_point_message = Float64MultiArray()
+            current_trajectory_set_point_message = convert_array_to_float64_multi_array_message(
+                self.current_trajectory_set_point)
 
-            # Fill in the message with data from the current trajectory set point
-            current_trajectory_set_point_message.layout.dim.append(MultiArrayDimension())
-            current_trajectory_set_point_message.layout.dim[0].label = 'vectors'
-            current_trajectory_set_point_message.layout.dim[0].size = self.current_trajectory_set_point.shape[0]
-            current_trajectory_set_point_message.layout.dim[0].stride = self.current_trajectory_set_point.size
-            current_trajectory_set_point_message.layout.dim.append(MultiArrayDimension())
-            current_trajectory_set_point_message.layout.dim[1].label = 'dimensions'
-            current_trajectory_set_point_message.layout.dim[1].size = self.current_trajectory_set_point.shape[1]
-            current_trajectory_set_point_message.layout.dim[1].stride = self.current_trajectory_set_point.shape[1]
-            current_trajectory_set_point_message.data = self.current_trajectory_set_point.reshape(
-                [self.current_trajectory_set_point.size])
+            # # Fill in the message with data from the current trajectory set point
+            # current_trajectory_set_point_message.layout.dim.append(MultiArrayDimension())
+            # current_trajectory_set_point_message.layout.dim[0].label = 'vectors'
+            # current_trajectory_set_point_message.layout.dim[0].size = self.current_trajectory_set_point.shape[0]
+            # current_trajectory_set_point_message.layout.dim[0].stride = self.current_trajectory_set_point.size
+            # current_trajectory_set_point_message.layout.dim.append(MultiArrayDimension())
+            # current_trajectory_set_point_message.layout.dim[1].label = 'dimensions'
+            # current_trajectory_set_point_message.layout.dim[1].size = self.current_trajectory_set_point.shape[1]
+            # current_trajectory_set_point_message.layout.dim[1].stride = self.current_trajectory_set_point.shape[1]
+            # current_trajectory_set_point_message.data = self.current_trajectory_set_point.reshape(
+            #     [self.current_trajectory_set_point.size])
 
             # Update the set point in the robot control node
             self.set_next_waypoint_service(current_trajectory_set_point_message)
@@ -328,14 +389,20 @@ class TrajectoryManagementNode(BasicNode):
                     # If the segmentation has not been requested to stabilize
                     if not self.has_stabilization_been_requested:
 
+                        self.log_single_message('Current waypoint reached')
+
                         # Request the segmentation stabilize
                         resp = self.set_segmentation_phase_service(REST_PHASE)
 
                         # Save the status of the request
                         self.has_stabilization_been_requested = resp.was_succesful
 
+                        self.log_single_message('Segmentation requested to stabilize')
+
                     # If the segmentation has not stabilized
                     elif not self.has_segmentation_stabilized:
+
+                        new_status = WAITING_FOR_SEGMENTATION_STABILIZATION
 
                         # Request an update on the status of the stabilization
                         resp = self.has_segmentation_stabilized_service()
@@ -345,11 +412,12 @@ class TrajectoryManagementNode(BasicNode):
 
                         # If it has not stabilized
                         if not self.has_segmentation_stabilized:
-
                             # Sleep for 0.25 seconds
                             sleep(0.25)
 
                     elif self.complete_trajectory_without_registering_data:
+
+                        self.log_single_message('Segmentation has stabilized')
 
                         # Skip the request to register data step
                         self.data_registration_was_requested = True
@@ -357,12 +425,18 @@ class TrajectoryManagementNode(BasicNode):
                         # Override that data has been registered
                         self.data_has_been_registered = True
 
+                        self.log_single_message('Data will not be registered for this waypoint')
+
                     elif not self.data_registration_was_requested:
+
+                        self.log_single_message('Segmentation has stabilized')
 
                         # Request to register data
                         resp = self.register_new_data_service(True)
 
                         self.data_registration_was_requested = resp.was_succesful
+
+                        self.log_single_message('Data was requested to be registered')
 
                     elif self.data_has_been_registered:
 
@@ -378,6 +452,8 @@ class TrajectoryManagementNode(BasicNode):
                         self.data_has_been_registered = False
                         self.data_registration_was_requested = False
 
+                        self.log_single_message('A new waypoint has been set')
+
         self.publish_node_status(new_status=new_status, delay_publishing=0.5, default_status=ROBOT_POSE_UNKNOWN)
 
 
@@ -385,10 +461,13 @@ if __name__ == '__main__':
 
     node = TrajectoryManagementNode()
 
+    rate = Rate(150)
+
     print("Node initialized.")
     print("Press ctrl+c to terminate.")
 
     while not is_shutdown():
         node.main_loop()
+        rate.sleep()
 
     print("Node terminated.")

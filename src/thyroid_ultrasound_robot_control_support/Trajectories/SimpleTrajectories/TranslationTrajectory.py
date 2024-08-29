@@ -6,6 +6,8 @@ Contains the code for the TranslationTrajectory class.
 
 # Import custom python packages
 from thyroid_ultrasound_robot_control_support.Trajectories.SimpleTrajectories.SimpleTrajectory import *
+from thyroid_ultrasound_robot_control_support.Controllers.FeatureBasedController.Feature import Feature
+from thyroid_ultrasound_robot_control_support.Controllers.FeatureBasedController.FeatureConstants import *
 
 
 class TranslationTrajectory(SimpleTrajectory):
@@ -61,6 +63,16 @@ class TranslationTrajectory(SimpleTrajectory):
                                 linspace(start=0, stop=self.ending_offset_distance[1], num=num_points),
                                 linspace(start=0, stop=self.ending_offset_distance[2], num=num_points)])
 
+            # Determine which axes should be locked based on the offset given
+            temp_list = []
+            for index, options in zip(range(3), [(X_LOCKED, X_UNLOCKED), (Y_LOCKED, Y_UNLOCKED),
+                                                 (Z_LOCKED, Z_UNLOCKED)]):
+                if self.ending_offset_distance[index] != 0:
+                    temp_list.append(options[0])
+                else:
+                    temp_list.append(options[1])
+            locked_axes = (tuple(temp_list), (ROLL_LOCKED, PITCH_LOCKED, YAW_LOCKED))
+
             # For each column vector in the trajectory
             for ii in range(trajectory.shape[1]):
 
@@ -71,7 +83,10 @@ class TranslationTrajectory(SimpleTrajectory):
                 temp_transformation_matrix[0:3, 3, newaxis] = trajectory[:, ii]
 
                 # Add a new pose to the trajectory of the starting pose plus the new transformation
-                self.components_in_trajectory.append(self.starting_pose + temp_transformation_matrix)
+                self.components_in_trajectory.append(
+                    Feature(defining_pose=(self.starting_pose + temp_transformation_matrix),
+                            translational_locked_axes=locked_axes[0],
+                            rotational_locked_axes=locked_axes[1]))
 
         else:
             raise Exception("The ending-offset-distance cannot be None.")

@@ -12,6 +12,6 @@
 	<node name="RobotControlNode" pkg="thyroid_ultrasound_robot_control" type="RobotControlNode.py" args="--simulate_robot" if="$(eval arg('simulate_robot'))"/>
 	
 	<!-- start the trajectory management node -->
-	<node name="TrajectoryManagamentNode" pkg="thyroid_ultrasound_robot_control" type="TrajectoryManagementNode.py"/>
+	<node name="TrajectoryManagement" pkg="thyroid_ultrasound_robot_control" type="TrajectoryManagementNode.py"/>
 	
 </launch>
