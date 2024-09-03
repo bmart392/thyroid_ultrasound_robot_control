@@ -87,7 +87,7 @@ class HighLevelMotionController(BasicNode):
             self.actions_to_complete.append(SLBD_SCAN)
             self.scan_distances.append([req.direction_1_distance, req.direction_2_distance])
         else:
-            return SingleLobeScanResponse(was_succesful=False, message="Action type of '" + str(req.action) +
+            return SingleLobeScanResponse(was_successful=False, message="Action type of '" + str(req.action) +
                                                                        "' was not recognized.")
 
     def main(self):

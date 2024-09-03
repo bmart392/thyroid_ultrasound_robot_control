@@ -161,7 +161,7 @@ class TrajectoryManagementNode(BasicNode):
         else:
             status_msg = 'inactive'
         self.log_single_message('Patient contact override is ' + status_msg)
-        return BoolRequestResponse(was_succesful=True, message=NO_ERROR)
+        return BoolRequestResponse(was_successful=True, message=NO_ERROR)
 
     def is_proper_force_applied_override_handler(self, req: BoolRequestRequest):
         self.is_proper_force_applied_override = req.value
@@ -170,7 +170,7 @@ class TrajectoryManagementNode(BasicNode):
         else:
             status_msg = 'inactive'
         self.log_single_message('Proper force applied override is ' + status_msg)
-        return BoolRequestResponse(was_succesful=True, message=NO_ERROR)
+        return BoolRequestResponse(was_successful=True, message=NO_ERROR)
 
     def is_image_balanced_override_handler(self, req: BoolRequestRequest):
         self.is_image_balanced_override = req.value
@@ -179,7 +179,7 @@ class TrajectoryManagementNode(BasicNode):
         else:
             status_msg = 'inactive'
         self.log_single_message('Proper image balance override is ' + status_msg)
-        return BoolRequestResponse(was_succesful=True, message=NO_ERROR)
+        return BoolRequestResponse(was_successful=True, message=NO_ERROR)
 
     def is_image_centered_override_handler(self, req: BoolRequestRequest):
         self.is_image_centered_override = req.value
@@ -188,7 +188,7 @@ class TrajectoryManagementNode(BasicNode):
         else:
             status_msg = 'inactive'
         self.log_single_message('Proper image centering override is ' + status_msg)
-        return BoolRequestResponse(was_succesful=True, message=NO_ERROR)
+        return BoolRequestResponse(was_successful=True, message=NO_ERROR)
 
     def registered_data_success_override_handler(self, req: BoolRequestRequest):
         self.registered_data_success_override = req.value
@@ -197,7 +197,7 @@ class TrajectoryManagementNode(BasicNode):
         else:
             status_msg = 'inactive'
         self.log_single_message('Success of data registration override is ' + status_msg)
-        return BoolRequestResponse(was_succesful=True, message=NO_ERROR)
+        return BoolRequestResponse(was_successful=True, message=NO_ERROR)
 
     def data_has_been_registered_handler(self, req: BoolRequestRequest):
         self.data_has_been_registered = req.value
@@ -206,7 +206,7 @@ class TrajectoryManagementNode(BasicNode):
         else:
             status_msg = 'not '
         self.log_single_message('Data has ' + status_msg + 'been registered')
-        return BoolRequestResponse(was_succesful=True, message=NO_ERROR)
+        return BoolRequestResponse(was_successful=True, message=NO_ERROR)
 
     # endregion
 
@@ -270,16 +270,16 @@ class TrajectoryManagementNode(BasicNode):
             self.log_single_message('New trajectory created')
 
             # Send the response
-            return Float64RequestResponse(was_succesful=True, message=NO_ERROR)
+            return Float64RequestResponse(was_successful=True, message=NO_ERROR)
 
         self.log_single_message('Trajectory could not be created because robot pose was not known')
-        return Float64RequestResponse(was_succesful=False, message="No known robot pose")
+        return Float64RequestResponse(was_successful=False, message="No known robot pose")
 
     # Define the service for setting the image spacing
     def set_trajectory_spacing_handler(self, req: Float64RequestRequest):
         self.min_distance_between_registered_scans = req.value
         self.log_single_message('New trajectory spacing set to ' + str(req.value) + ' meters')
-        return Float64RequestResponse(was_succesful=True, message=NO_ERROR)
+        return Float64RequestResponse(was_successful=True, message=NO_ERROR)
 
     # Define service for clearing trajectory
     def clear_trajectory_handler(self, req: BoolRequestRequest):
@@ -290,7 +290,7 @@ class TrajectoryManagementNode(BasicNode):
             # Clear the set points in the robot control node
             self.clear_current_set_points_service(True)
             self.log_single_message('Current trajectory cleared')
-        return BoolRequestResponse(was_succesful=True, message=NO_ERROR)
+        return BoolRequestResponse(was_successful=True, message=NO_ERROR)
 
     # Define the service for completing a trajectory without registering data
     def complete_trajectory_without_data(self, req: BoolRequestRequest):
@@ -300,7 +300,7 @@ class TrajectoryManagementNode(BasicNode):
         else:
             status_msg = 'with'
         self.log_single_message('Trajectories will be completed ' + status_msg + ' data registration')
-        return BoolRequestResponse(was_succesful=True, message=NO_ERROR)
+        return BoolRequestResponse(was_successful=True, message=NO_ERROR)
 
     # Define service for pausing the trajectory
     def pause_trajectory(self, req: BoolRequestRequest):
@@ -395,7 +395,7 @@ class TrajectoryManagementNode(BasicNode):
                         resp = self.set_segmentation_phase_service(REST_PHASE)
 
                         # Save the status of the request
-                        self.has_stabilization_been_requested = resp.was_succesful
+                        self.has_stabilization_been_requested = resp.was_successful
 
                         self.log_single_message('Segmentation requested to stabilize')
 
@@ -408,7 +408,7 @@ class TrajectoryManagementNode(BasicNode):
                         resp = self.has_segmentation_stabilized_service()
 
                         # Save the status of the request
-                        self.has_segmentation_stabilized = resp.was_succesful
+                        self.has_segmentation_stabilized = resp.was_successful
 
                         # If it has not stabilized
                         if not self.has_segmentation_stabilized:
@@ -434,7 +434,7 @@ class TrajectoryManagementNode(BasicNode):
                         # Request to register data
                         resp = self.register_new_data_service(True)
 
-                        self.data_registration_was_requested = resp.was_succesful
+                        self.data_registration_was_requested = resp.was_successful
 
                         self.log_single_message('Data was requested to be registered')
 
