@@ -6,6 +6,7 @@ File containing the Basic Controller class.
 
 # Import standard python packages
 from numpy import array, append, delete
+from typing import Tuple
 
 # Import custom python packages
 from thyroid_ultrasound_robot_control_support.Controllers.ControllerConstants import *
@@ -108,7 +109,7 @@ class BasicController:
         # Calculate the current error
         return self.set_point - new_reading
 
-    def calculate_output(self, new_reading) -> (float, bool, float):
+    def calculate_output(self, new_reading) -> Tuple[float, bool, float]:
         """
         Calculates the control output based on the current error. Also returns if the set point has been reached and
         the current error of the system.

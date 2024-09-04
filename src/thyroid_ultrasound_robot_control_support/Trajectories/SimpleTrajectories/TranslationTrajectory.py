@@ -64,14 +64,12 @@ class TranslationTrajectory(SimpleTrajectory):
                                 linspace(start=0, stop=self.ending_offset_distance[2], num=num_points)])
 
             # Determine which axes should be locked based on the offset given
-            temp_list = []
-            for index, options in zip(range(3), [(X_LOCKED, X_UNLOCKED), (Y_LOCKED, Y_UNLOCKED),
-                                                 (Z_LOCKED, Z_UNLOCKED)]):
-                if self.ending_offset_distance[index] != 0:
-                    temp_list.append(options[0])
-                else:
-                    temp_list.append(options[1])
-            locked_axes = (tuple(temp_list), (ROLL_LOCKED, PITCH_LOCKED, YAW_LOCKED))
+            locked_axes = []
+            for index in range(3):
+                locked_axes.append(self.ending_offset_distance.flatten()[index] != 0)
+
+            # Add in the proper locking for each rotation axis
+            locked_axes = tuple(locked_axes + [UNLOCKED] + [LOCKED] * 2)
 
             # For each column vector in the trajectory
             for ii in range(trajectory.shape[1]):
@@ -85,8 +83,7 @@ class TranslationTrajectory(SimpleTrajectory):
                 # Add a new pose to the trajectory of the starting pose plus the new transformation
                 self.components_in_trajectory.append(
                     Feature(defining_pose=(self.starting_pose + temp_transformation_matrix),
-                            translational_locked_axes=locked_axes[0],
-                            rotational_locked_axes=locked_axes[1]))
+                            status_of_axes=locked_axes))
 
         else:
             raise Exception("The ending-offset-distance cannot be None.")
@@ -165,4 +162,3 @@ if __name__ == '__main__':
     print("Number of points remaining in the trajectory: " + str(len(temp_trajectory.components_remaining)))
     print("Number of points reached in the trajectory: " + str(len(temp_trajectory.components_reached)))
     print("---")
-

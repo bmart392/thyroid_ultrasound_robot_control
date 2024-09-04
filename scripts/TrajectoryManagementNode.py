@@ -6,10 +6,9 @@ File containing the TrajectoryManagementNode class.
 
 # Import standard ROS packages
 from armer_msgs.msg import ManipulatorState
-from std_msgs.msg import Float64MultiArray, MultiArrayDimension
 
 # Import standard python packages
-from numpy import copy, array, linspace, append
+from numpy import copy, array
 from rospy import sleep
 
 # Import custom ROS packages
@@ -19,13 +18,10 @@ from thyroid_ultrasound_services.srv import *
 # Import custom python packages
 from thyroid_ultrasound_robot_control_support.Helpers.convert_pose_to_transform_matrix import \
     convert_pose_to_transform_matrix
-from thyroid_ultrasound_robot_control_support.Helpers.calc_rpy import calc_rpy
 from thyroid_ultrasound_support.Constants.SharedConstants import REST_PHASE, GROWTH_PHASE
 from thyroid_ultrasound_robot_control_support.Trajectories.SimpleTrajectories.TranslationTrajectory import \
     TranslationTrajectory
 from thyroid_ultrasound_robot_control_support.Trajectories import Trajectory
-from thyroid_ultrasound_support.MessageConversion.convert_array_to_float64_multi_array_message import \
-    convert_array_to_float64_multi_array_message
 
 
 class TrajectoryManagementNode(BasicNode):
@@ -39,14 +35,9 @@ class TrajectoryManagementNode(BasicNode):
 
         # Define a variable to store the trajectory as a child of the Trajectory class
         self.current_trajectory_object: Trajectory = None
-        self.translation_trajectory_object: TranslationTrajectory = None
-
-        # Define a variable to store the trajectory
-        self.trajectory = None
-        self.current_trajectory_set_point = None
 
         # Define the default spacing for trajectories
-        self.min_distance_between_registered_scans = 1  # millimeters
+        self.min_distance_between_registered_scans = 0.001  # meters
 
         # Define flag variables
         self.is_patient_in_contact = False
@@ -54,8 +45,6 @@ class TrajectoryManagementNode(BasicNode):
         self.is_image_centered = False
         self.is_proper_force_applied = False
         self.is_image_balanced = False
-        self.trajectory_pitch_goal_reached = False
-        self.trajectory_yaw_goal_reached = False
         self.is_trajectory_paused = False
         self.data_registration_was_requested = False
         self.data_has_been_registered = False
@@ -79,12 +68,10 @@ class TrajectoryManagementNode(BasicNode):
         # Define status subscribers
         Subscriber(IMAGE_PATIENT_CONTACT, Bool, self.is_patient_in_contact_callback)
 
-        Subscriber(RC_POSITION_GOAL_LIN_X_REACHED, Bool, self.trajectory_waypoint_reached_callback)
+        Subscriber(RC_POSITION_CONTROL_GOAL_REACHED, Bool, self.trajectory_waypoint_reached_callback)
         Subscriber(RC_IMAGE_CONTROL_GOAL_REACHED, Bool, self.is_image_centered_callback)
         Subscriber(RC_FORCE_CONTROL_GOAL_REACHED, Bool, self.is_proper_force_applied_callback)
         Subscriber(RC_IMAGE_BALANCE_GOAL_REACHED, Bool, self.is_image_balanced_callback)
-        Subscriber(RC_POSITION_GOAL_ANG_Y_REACHED, Bool, self.trajectory_pitch_goal_reached_callback)
-        Subscriber(RC_POSITION_GOAL_ANG_Z_REACHED, Bool, self.trajectory_yaw_goal_reached_callback)
 
         # Define override services
         Service(TM_OVERRIDE_PATIENT_CONTACT, BoolRequest, self.is_patient_in_contact_override_handler)
@@ -101,9 +88,6 @@ class TrajectoryManagementNode(BasicNode):
         Service(TM_DATA_HAS_BEEN_REGISTERED, BoolRequest, self.data_has_been_registered_handler)
 
         # Define robot control service proxies
-        self.set_trajectory_pitch_service = ServiceProxy(RC_SET_TRAJECTORY_PITCH, Float64Request)
-        self.set_trajectory_yaw_service = ServiceProxy(RC_SET_TRAJECTORY_YAW, Float64Request)
-        self.set_next_waypoint_service = ServiceProxy(RC_SET_NEXT_WAYPOINT, Float64MultiArrayRequest)
         self.clear_current_set_points_service = ServiceProxy(RC_CLEAR_CURRENT_SET_POINTS, BoolRequest)
         self.set_next_feature_waypoint_service = ServiceProxy(RC_SET_NEXT_FEATURE_WAYPOINT, TrajectoryWaypoint)
 
@@ -142,12 +126,6 @@ class TrajectoryManagementNode(BasicNode):
 
     def is_image_balanced_callback(self, msg: Bool):
         self.is_image_balanced = msg.data
-
-    def trajectory_pitch_goal_reached_callback(self, msg: Bool):
-        self.trajectory_pitch_goal_reached = msg.data
-
-    def trajectory_yaw_goal_reached_callback(self, msg: Bool):
-        self.trajectory_yaw_goal_reached = msg.data
 
     # endregion
 
@@ -215,57 +193,15 @@ class TrajectoryManagementNode(BasicNode):
         # Do not try to create a trajectory unless the robot pose transformation is known
         if self.current_pose is not None:
 
-            self.translation_trajectory_object = TranslationTrajectory(
+            # Create the new trajectory object
+            self.current_trajectory_object = TranslationTrajectory(
                 distance_between_way_points=self.min_distance_between_registered_scans,
                 starting_pose=copy(self.current_pose),
-                ending_offset_distance=array([req.value, 0, 0]))
+                ending_offset_distance=array([req.value, 0, 0]),
+                generate_trajectory_on_call=True)
 
-            # Define the distance to travel and the number of points to generate along the way
-            # Also convert the distance between scans to millimeters before using it
-            num_points = abs(round(req.value / self.min_distance_between_registered_scans))
-
-            # Save a copy of the robot pose transformation to use to ensure data is not overwritten in the process
-            local_pose_transformation = copy(self.current_pose)
-
-            # Calculate the RPY of the current pose to use for the trajectory maintenance
-            roll, pitch, yaw = calc_rpy(self.current_pose[0:3, 0:3])
-
-            # Set the current pitch and yaw as the set-points for the angular controllers
-            self.set_trajectory_pitch_service(pitch)
-            self.set_trajectory_yaw_service(yaw)
-
-            # Create linear vectors on each plane between the current position and a distance in the x-axis containing
-            # a given number of points
-            trajectory = array([linspace(start=array([0, 0, 0]), stop=array([req.value, 0, 0]), num=num_points),
-                                linspace(start=array([0, 1, 0]), stop=array([req.value, 1, 0]), num=num_points),
-                                linspace(start=array([0, 0, 1]), stop=array([req.value, 0, 1]), num=num_points)])
-
-            # Transform each point coordinate into the origin frame of the robot
-            ii = 0
-            for vector in trajectory:
-                jj = 0
-                for coordinate in vector:
-                    # Add a zero to the end of the coordinate to allow multiplication by the transformation matrix
-                    temp_coordinate = append(coordinate, 1)
-
-                    # Reshape the coordinate into a column vector
-                    temp_coordinate = temp_coordinate.reshape((4, 1))
-
-                    # Transform the coordinate into the origin frame of the robot
-                    temp_coordinate = local_pose_transformation @ temp_coordinate
-
-                    # Save the transformed coordinate into the trajectory
-                    trajectory[ii][jj] = temp_coordinate[0:3].reshape(3)
-
-                    jj = jj + 1
-                ii = ii + 1
-
-            # Save the generated trajectory as the current trajectory
-            self.trajectory = trajectory
-
-            # Set the current set point for the trajectory
-            self.update_current_trajectory_set_point()
-            self.set_next_feature_waypoint_service(self.translation_trajectory_object.get_current().to_msg())
+            # Transmit the current waypoint
+            self.set_next_feature_waypoint_service(self.current_trajectory_object.get_current().to_msg())
 
             self.log_single_message('New trajectory created')
 
@@ -285,8 +221,8 @@ class TrajectoryManagementNode(BasicNode):
     def clear_trajectory_handler(self, req: BoolRequestRequest):
         if req.value:
             # Clear the trajectory
-            self.trajectory = None
-            self.current_trajectory_set_point = None
+            self.current_trajectory_object.clear()
+
             # Clear the set points in the robot control node
             self.clear_current_set_points_service(True)
             self.log_single_message('Current trajectory cleared')
@@ -312,55 +248,6 @@ class TrajectoryManagementNode(BasicNode):
         self.log_single_message('Trajectory progress is ' + status_msg)
         return BoolRequestResponse(was_successful=True, message=NO_ERROR)
 
-    def update_current_trajectory_set_point(self):
-        """
-        Updates the current trajectory set point variable and the current trajectory variable depending on the
-        level of completion of the trajectory.
-        """
-
-        # If the trajectory is not empty
-        if self.trajectory is not None and self.trajectory.size > 0:
-
-            # Save the next surface to travel to
-            self.current_trajectory_set_point = array([self.trajectory[0][0],
-                                                       self.trajectory[1][0],
-                                                       self.trajectory[2][0],
-                                                       ])
-
-            # Pop the current set point out of the trajectory
-            self.trajectory = array([self.trajectory[0][1:],
-                                     self.trajectory[1][1:],
-                                     self.trajectory[2][1:],
-                                     ])
-
-            # Create a new multi-dimension array message to transmit the goal surface information
-            # current_trajectory_set_point_message = Float64MultiArray()
-            current_trajectory_set_point_message = convert_array_to_float64_multi_array_message(
-                self.current_trajectory_set_point)
-
-            # # Fill in the message with data from the current trajectory set point
-            # current_trajectory_set_point_message.layout.dim.append(MultiArrayDimension())
-            # current_trajectory_set_point_message.layout.dim[0].label = 'vectors'
-            # current_trajectory_set_point_message.layout.dim[0].size = self.current_trajectory_set_point.shape[0]
-            # current_trajectory_set_point_message.layout.dim[0].stride = self.current_trajectory_set_point.size
-            # current_trajectory_set_point_message.layout.dim.append(MultiArrayDimension())
-            # current_trajectory_set_point_message.layout.dim[1].label = 'dimensions'
-            # current_trajectory_set_point_message.layout.dim[1].size = self.current_trajectory_set_point.shape[1]
-            # current_trajectory_set_point_message.layout.dim[1].stride = self.current_trajectory_set_point.shape[1]
-            # current_trajectory_set_point_message.data = self.current_trajectory_set_point.reshape(
-            #     [self.current_trajectory_set_point.size])
-
-            # Update the set point in the robot control node
-            self.set_next_waypoint_service(current_trajectory_set_point_message)
-
-        # Otherwise clear the trajectory and the current set point
-        else:
-            if self.trajectory is not None:
-                self.trajectory_complete_service(True)
-            self.trajectory = None
-            self.current_trajectory_set_point = None
-            self.clear_current_set_points_service(True)
-
     def main_loop(self):
 
         # Define the default status message
@@ -372,7 +259,7 @@ class TrajectoryManagementNode(BasicNode):
             new_status = NO_TRAJECTORY_EXISTS
 
             # if a trajectory exists
-            if self.trajectory is not None and self.current_trajectory_set_point is not None:
+            if self.current_trajectory_object is not None and not self.current_trajectory_object.is_complete():
 
                 new_status = WAYPOINT_NOT_REACHED
 
@@ -441,7 +328,7 @@ class TrajectoryManagementNode(BasicNode):
                     elif self.data_has_been_registered:
 
                         # Send the waypoint
-                        self.update_current_trajectory_set_point()
+                        self.current_trajectory_object.update()
 
                         # Set the segmentation back to growth mode
                         self.set_segmentation_phase_service(GROWTH_PHASE)

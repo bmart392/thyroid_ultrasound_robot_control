@@ -9,6 +9,7 @@ P_GAIN: int = int(0)
 I_GAIN: int = int(1)
 D_GAIN: int = int(2)
 
+# Define a tag for each sub-controller in the FeatureController object
 X_LINEAR_CONTROLLER: int = int(0)
 Y_LINEAR_CONTROLLER: int = int(1)
 Z_LINEAR_CONTROLLER: int = int(2)

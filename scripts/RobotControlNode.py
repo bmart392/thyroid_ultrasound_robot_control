@@ -61,6 +61,12 @@ class RobotControlNode(BasicNode):
         self.linear_x_controller = SurfaceController(p_gain=1.5, error_tolerance=0.0005,  # 0.3, 0.007, 0.000, 0.0000
                                                      d_gain=0.0000,
                                                      i_gain=0.0000)  # x linear, position-based, error = meters
+
+        self.angular_y_controller = BasicController(p_gain=0.01, error_tolerance=0.050,
+                                                    d_gain=0.00, i_gain=0)  # y rotation, position-based, error = deg
+        self.angular_z_controller = BasicController(p_gain=0.01, error_tolerance=0.050,
+                                                    d_gain=0.00, i_gain=0)  # z rotation, position-based, error = deg
+
         self.linear_y_controller = BasicController(p_gain=0.0000500, error_tolerance=15,  # 0.1, 0.0002, 0.000, 0.000
                                                    d_gain=0.000, i_gain=.000,
                                                    set_point=0.)  # y linear, image-based, error = pixels
@@ -70,10 +76,6 @@ class RobotControlNode(BasicNode):
         self.angular_x_controller = BasicController(p_gain=1.5, error_tolerance=0.005,  # 0.02, 0.1, 0.000, 0.000
                                                     d_gain=0.00, i_gain=0.000,
                                                     set_point=0.)  # x rotation, image-based, error = no units
-        self.angular_y_controller = BasicController(p_gain=0.01, error_tolerance=0.050,
-                                                    d_gain=0.00, i_gain=0)  # y rotation, position-based, error = deg
-        self.angular_z_controller = BasicController(p_gain=0.01, error_tolerance=0.050,
-                                                    d_gain=0.00, i_gain=0)  # z rotation, position-based, error = deg
 
         # Save the controllers in a dictionary for easy reference
         self.controllers = {X_LINEAR_CONTROLLER: self.linear_x_controller,
@@ -150,12 +152,10 @@ class RobotControlNode(BasicNode):
                                                                ControllerStatus, queue_size=1)
 
         # Define publishers for when each controller has reached its set point
-        self.position_lin_x_goal_reached_publisher = Publisher(RC_POSITION_GOAL_LIN_X_REACHED, Bool, queue_size=1)
+        self.position_lin_x_goal_reached_publisher = Publisher(RC_POSITION_CONTROL_GOAL_REACHED, Bool, queue_size=1)
         self.image_centering_goal_reached_publisher = Publisher(RC_IMAGE_CONTROL_GOAL_REACHED, Bool, queue_size=1)
         self.force_goal_reached_publisher = Publisher(RC_FORCE_CONTROL_GOAL_REACHED, Bool, queue_size=1)
         self.image_balancing_goal_reached_publisher = Publisher(RC_IMAGE_BALANCE_GOAL_REACHED, Bool, queue_size=1)
-        self.position_ang_y_goal_reached_publisher = Publisher(RC_POSITION_GOAL_ANG_Y_REACHED, Bool, queue_size=1)
-        self.position_ang_z_goal_reached_publisher = Publisher(RC_POSITION_GOAL_ANG_Z_REACHED, Bool, queue_size=1)
 
         # Define a publisher for publishing the position based error
         self.combined_position_error_publisher = Publisher(RC_POSITION_ERROR, TwistStamped, queue_size=1)
@@ -607,8 +607,6 @@ class RobotControlNode(BasicNode):
         self.image_centering_goal_reached_publisher.publish(y_lin_set_point_reached)
         self.force_goal_reached_publisher.publish(z_lin_set_point_reached)
         self.image_balancing_goal_reached_publisher.publish(x_ang_set_point_reached)
-        self.position_ang_y_goal_reached_publisher.publish(y_ang_set_point_reached)
-        self.position_ang_z_goal_reached_publisher .publish(z_ang_set_point_reached)
 
 
 if __name__ == '__main__':
