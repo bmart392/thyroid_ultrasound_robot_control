@@ -19,7 +19,7 @@ from scipy.spatial.transform import Rotation
 from argparse import ArgumentParser
 
 # Import custom ROS packages
-from thyroid_ultrasound_messages.msg import Float64Stamped, ControllerStatus
+from thyroid_ultrasound_messages.msg import Float64Stamped, ControllerStatus, CombinedPositionControllerStatus
 
 # Import custom python packages
 from thyroid_ultrasound_support.BasicNode import *
@@ -31,6 +31,9 @@ from thyroid_ultrasound_robot_control_support.Controllers.FeatureBasedController
 from thyroid_ultrasound_robot_control_support.Helpers.calc_rpy import calc_rpy
 from thyroid_ultrasound_robot_control_support.Helpers.convert_pose_to_transform_matrix import \
     convert_pose_to_transform_matrix
+from thyroid_ultrasound_robot_control_support.Controllers.FeatureBasedController.FeatureController import \
+    FeatureController
+from thyroid_ultrasound_robot_control_support.Controllers.FeatureBasedController.Feature import Feature
 
 
 class RobotControlNode(BasicNode):
@@ -58,14 +61,19 @@ class RobotControlNode(BasicNode):
         self.overall_speed_factor = 1.0
 
         # Define controller objects for each dimension
-        self.linear_x_controller = SurfaceController(p_gain=1.5, error_tolerance=0.0005,  # 0.3, 0.007, 0.000, 0.0000
-                                                     d_gain=0.0000,
-                                                     i_gain=0.0000)  # x linear, position-based, error = meters
+        # self.linear_x_controller = SurfaceController(p_gain=1.5, error_tolerance=0.0005,  # 0.3, 0.007, 0.000, 0.0000
+        #                                              d_gain=0.0000,
+        #                                              i_gain=0.0000)  # x linear, position-based, error = meters
+        #
+        # self.angular_y_controller = BasicController(p_gain=0.01, error_tolerance=0.050,
+        #                                             d_gain=0.00, i_gain=0)  # y rotation, position-based, error = deg
+        # self.angular_z_controller = BasicController(p_gain=0.01, error_tolerance=0.050,
+        #                                             d_gain=0.00, i_gain=0)  # z rotation, position-based, error = deg
 
-        self.angular_y_controller = BasicController(p_gain=0.01, error_tolerance=0.050,
-                                                    d_gain=0.00, i_gain=0)  # y rotation, position-based, error = deg
-        self.angular_z_controller = BasicController(p_gain=0.01, error_tolerance=0.050,
-                                                    d_gain=0.00, i_gain=0)  # z rotation, position-based, error = deg
+        self.combined_position_controller = FeatureController(p_gains=[1.5, 1.5, 1.5, 0.01, 0.01, 0.01],
+                                                              error_tolerances=[.0005, .0005, .0005, .05, .05, .05],
+                                                              d_gains=[0] * 6,
+                                                              i_gains=[0] * 6)
 
         self.linear_y_controller = BasicController(p_gain=0.0000500, error_tolerance=15,  # 0.1, 0.0002, 0.000, 0.000
                                                    d_gain=0.000, i_gain=.000,
@@ -78,12 +86,10 @@ class RobotControlNode(BasicNode):
                                                     set_point=0.)  # x rotation, image-based, error = no units
 
         # Save the controllers in a dictionary for easy reference
-        self.controllers = {X_LINEAR_CONTROLLER: self.linear_x_controller,
+        self.controllers = {COMBINED_POSITION_CONTROLLER: self.combined_position_controller,
                             Y_LINEAR_CONTROLLER: self.linear_y_controller,
                             Z_LINEAR_CONTROLLER: self.linear_z_controller,
                             X_ANGULAR_CONTROLLER: self.angular_x_controller,
-                            Y_ANGULAR_CONTROLLER: self.angular_y_controller,
-                            Z_ANGULAR_CONTROLLER: self.angular_z_controller,
                             }
 
         # Define control inputs to be used
@@ -138,21 +144,24 @@ class RobotControlNode(BasicNode):
         self.position_goal_transform_publisher = StaticTransformBroadcaster()
 
         # Define publishers for publishing the statuses of the individual controllers
-        self.linear_x_controller_status_publisher = Publisher(RC_LINEAR_X_CONTROLLER_STATUS,
-                                                              ControllerStatus, queue_size=1)
+        self.combined_position_controller_status_publisher = Publisher(RC_COMBINED_POSITION_CONTROLLER_STATUS,
+                                                                       CombinedPositionControllerStatus,
+                                                                       queue_size=1)
+        # self.linear_x_controller_status_publisher = Publisher(RC_LINEAR_X_CONTROLLER_STATUS,
+        #                                                       ControllerStatus, queue_size=1)
         self.linear_y_controller_status_publisher = Publisher(RC_LINEAR_Y_CONTROLLER_STATUS,
                                                               ControllerStatus, queue_size=1)
         self.linear_z_controller_status_publisher = Publisher(RC_LINEAR_Z_CONTROLLER_STATUS,
                                                               ControllerStatus, queue_size=1)
         self.angular_x_controller_status_publisher = Publisher(RC_ANGULAR_X_CONTROLLER_STATUS,
                                                                ControllerStatus, queue_size=1)
-        self.angular_y_controller_status_publisher = Publisher(RC_ANGULAR_Y_CONTROLLER_STATUS,
-                                                               ControllerStatus, queue_size=1)
-        self.angular_z_controller_status_publisher = Publisher(RC_ANGULAR_Z_CONTROLLER_STATUS,
-                                                               ControllerStatus, queue_size=1)
+        # self.angular_y_controller_status_publisher = Publisher(RC_ANGULAR_Y_CONTROLLER_STATUS,
+        #                                                        ControllerStatus, queue_size=1)
+        # self.angular_z_controller_status_publisher = Publisher(RC_ANGULAR_Z_CONTROLLER_STATUS,
+        #                                                        ControllerStatus, queue_size=1)
 
         # Define publishers for when each controller has reached its set point
-        self.position_lin_x_goal_reached_publisher = Publisher(RC_POSITION_CONTROL_GOAL_REACHED, Bool, queue_size=1)
+        self.position_control_goal_reached_publisher = Publisher(RC_POSITION_CONTROL_GOAL_REACHED, Bool, queue_size=1)
         self.image_centering_goal_reached_publisher = Publisher(RC_IMAGE_CONTROL_GOAL_REACHED, Bool, queue_size=1)
         self.force_goal_reached_publisher = Publisher(RC_FORCE_CONTROL_GOAL_REACHED, Bool, queue_size=1)
         self.image_balancing_goal_reached_publisher = Publisher(RC_IMAGE_BALANCE_GOAL_REACHED, Bool, queue_size=1)
@@ -191,9 +200,9 @@ class RobotControlNode(BasicNode):
         Service(RC_OVERALL_ROBOT_SPEED, Float64Request, self.overall_speed_factor_handler)
 
         # Create services for trajectory management
-        Service(RC_SET_TRAJECTORY_PITCH, Float64Request, self.set_trajectory_pitch_handler)
-        Service(RC_SET_TRAJECTORY_YAW, Float64Request, self.set_trajectory_yaw_handler)
-        Service(RC_SET_NEXT_WAYPOINT, Float64MultiArrayRequest, self.set_next_waypoint_handler)
+        # Service(RC_SET_TRAJECTORY_PITCH, Float64Request, self.set_trajectory_pitch_handler)
+        # Service(RC_SET_TRAJECTORY_YAW, Float64Request, self.set_trajectory_yaw_handler)
+        # Service(RC_SET_NEXT_WAYPOINT, Float64MultiArrayRequest, self.set_next_waypoint_handler)
         Service(RC_CLEAR_CURRENT_SET_POINTS, BoolRequest, self.clear_current_set_points_handler)
         Service(RC_SET_NEXT_FEATURE_WAYPOINT, TrajectoryWaypoint, self.set_next_feature_waypoint_handler)
 
@@ -350,38 +359,42 @@ class RobotControlNode(BasicNode):
     ##################
     # Trajectory handlers
     # region
-    def set_next_waypoint_handler(self, msg: Float64MultiArrayRequestRequest):
+    # def set_next_waypoint_handler(self, msg: Float64MultiArrayRequestRequest):
+    #
+    #     # Publish the message
+    #     self.position_goal_surface_publisher.publish(msg.next_waypoint)
+    #
+    #     # Create a new surface based on the given vertices and set that surface as the set-point for the controller
+    #     self.linear_x_controller.update_set_point(
+    #         Surface(array(msg.next_waypoint.data).reshape((3, 3)))
+    #     )
+    #
+    #     # Publish the current set point as a transform to visualize it in RViz
+    #     self.publish_goal_surface_as_transform()
+    #
+    #     return Float64MultiArrayRequestResponse(True, NO_ERROR)
 
-        # Publish the message
-        self.position_goal_surface_publisher.publish(msg.next_waypoint)
-
-        # Create a new surface based on the given vertices and set that surface as the set-point for the controller
-        self.linear_x_controller.update_set_point(
-            Surface(array(msg.next_waypoint.data).reshape((3, 3)))
-        )
-
-        # Publish the current set point as a transform to visualize it in RViz
-        self.publish_goal_surface_as_transform()
-
-        return Float64MultiArrayRequestResponse(True, NO_ERROR)
-
-    def set_trajectory_pitch_handler(self, msg: Float64RequestRequest):
-        self.angular_y_controller.update_set_point(msg.value)
-        return Float64RequestResponse(True, NO_ERROR)
-
-    def set_trajectory_yaw_handler(self, msg: Float64RequestRequest):
-        self.angular_z_controller.update_set_point(msg.value)
-        return Float64RequestResponse(True, NO_ERROR)
-
+    # def set_trajectory_pitch_handler(self, msg: Float64RequestRequest):
+    #     self.angular_y_controller.update_set_point(msg.value)
+    #     return Float64RequestResponse(True, NO_ERROR)
+    #
+    # def set_trajectory_yaw_handler(self, msg: Float64RequestRequest):
+    #     self.angular_z_controller.update_set_point(msg.value)
+    #     return Float64RequestResponse(True, NO_ERROR)
+    #
     def clear_current_set_points_handler(self, req: BoolRequestRequest):
         if req.value:
-            self.linear_x_controller.update_set_point(None)
-            self.angular_y_controller.update_set_point(None)
-            self.angular_z_controller.update_set_point(None)
+            # self.linear_x_controller.update_set_point(None)
+            # self.angular_y_controller.update_set_point(None)
+            # self.angular_z_controller.update_set_point(None)
+            self.combined_position_controller.update_set_point(None)
 
         return BoolRequestResponse(True, NO_ERROR)
 
     def set_next_feature_waypoint_handler(self, req: TrajectoryWaypointRequest):
+        self.combined_position_controller.update_set_point(Feature(defining_pose=None,
+                                                                   status_of_axes=None,
+                                                                   feature_as_msg=req.waypoint))
         return TrajectoryWaypointResponse(True, NO_ERROR)
 
     def publish_controller_statuses_handler(self, req: BoolRequestRequest):
@@ -434,28 +447,28 @@ class RobotControlNode(BasicNode):
     def image_frozen_status_callback(self, msg: Bool):
         self.image_is_frozen = msg.data
 
-    def publish_goal_surface_as_transform(self):
-
-        goal_vertex = self.linear_x_controller.set_point.point_on_plane
-        goal_rotation_matrix = array([self.o_t_ee[0][:3],
-                                      self.o_t_ee[1][:3],
-                                      self.o_t_ee[2][:3],
-                                      ])
-        goal_rotation_quaternion = Rotation.from_matrix(goal_rotation_matrix).as_quat()
-
-        transform_msg = TransformStamped()
-        transform_msg.header.stamp = Time.now()
-        transform_msg.header.frame_id = 'fr3_link0'  # panda_link0
-        transform_msg.child_frame_id = 'goal_surface'
-        transform_msg.transform.translation.x = goal_vertex[0]
-        transform_msg.transform.translation.y = goal_vertex[1]
-        transform_msg.transform.translation.z = goal_vertex[2]
-        transform_msg.transform.rotation.x = goal_rotation_quaternion[0]
-        transform_msg.transform.rotation.y = goal_rotation_quaternion[1]
-        transform_msg.transform.rotation.z = goal_rotation_quaternion[2]
-        transform_msg.transform.rotation.w = goal_rotation_quaternion[3]
-
-        self.position_goal_transform_publisher.sendTransform(transform_msg)
+    # def publish_goal_surface_as_transform(self):
+    #
+    #     goal_vertex = self.linear_x_controller.set_point.point_on_plane
+    #     goal_rotation_matrix = array([self.o_t_ee[0][:3],
+    #                                   self.o_t_ee[1][:3],
+    #                                   self.o_t_ee[2][:3],
+    #                                   ])
+    #     goal_rotation_quaternion = Rotation.from_matrix(goal_rotation_matrix).as_quat()
+    #
+    #     transform_msg = TransformStamped()
+    #     transform_msg.header.stamp = Time.now()
+    #     transform_msg.header.frame_id = 'fr3_link0'  # panda_link0
+    #     transform_msg.child_frame_id = 'goal_surface'
+    #     transform_msg.transform.translation.x = goal_vertex[0]
+    #     transform_msg.transform.translation.y = goal_vertex[1]
+    #     transform_msg.transform.translation.z = goal_vertex[2]
+    #     transform_msg.transform.rotation.x = goal_rotation_quaternion[0]
+    #     transform_msg.transform.rotation.y = goal_rotation_quaternion[1]
+    #     transform_msg.transform.rotation.z = goal_rotation_quaternion[2]
+    #     transform_msg.transform.rotation.w = goal_rotation_quaternion[3]
+    #
+    #     self.position_goal_transform_publisher.sendTransform(transform_msg)
 
     def publish_cleaned_force(self):
         # Create the message used to send the cleaned force data
@@ -478,29 +491,35 @@ class RobotControlNode(BasicNode):
 
         # Calculate each pose-based control input
         if self.o_t_ee is not None:
-            # Calculate the current roll, pitch, and yaw of the pose
-            roll, pitch, yaw = calc_rpy(self.o_t_ee[0:3, 0:3])
-
+            # # Calculate the current roll, pitch, and yaw of the pose
+            # roll, pitch, yaw = calc_rpy(self.o_t_ee[0:3, 0:3])
+            #
             # Calculate the output based on the current distance to the surface
-            x_lin_output, x_lin_set_point_reached, x_lin_current_error = \
-                self.linear_x_controller.calculate_output(
-                    array([self.o_t_ee[0][3], self.o_t_ee[1][3], self.o_t_ee[2][3]]))
-            y_ang_output, y_ang_set_point_reached, y_ang_current_error = self.angular_y_controller.calculate_output(
-                pitch)
-            z_ang_output, z_ang_set_point_reached, z_ang_current_error = self.angular_z_controller.calculate_output(
-                yaw)
+            # x_lin_output, x_lin_set_point_reached, x_lin_current_error = \
+            #     self.linear_x_controller.calculate_output(
+            #         array([self.o_t_ee[0][3], self.o_t_ee[1][3], self.o_t_ee[2][3]]))
+            # y_ang_output, y_ang_set_point_reached, y_ang_current_error = self.angular_y_controller.calculate_output(
+            #     pitch)
+            # z_ang_output, z_ang_set_point_reached, z_ang_current_error = self.angular_z_controller.calculate_output(
+            #     yaw)
+
+            combined_position_outputs, combined_position_set_points_reached, combined_position_errors = \
+                self.combined_position_controller.calculate_output(self.o_t_ee)
 
         # Otherwise set all their values equal to zero
         else:
-            x_lin_output = 0
-            x_lin_current_error = 0
-            x_lin_set_point_reached = False
-            y_ang_output = 0
-            y_ang_current_error = 0
-            y_ang_set_point_reached = False
-            z_ang_output = 0
-            z_ang_current_error = 0
-            z_ang_set_point_reached = False
+            # x_lin_output = 0
+            # x_lin_current_error = 0
+            # x_lin_set_point_reached = False
+            # y_ang_output = 0
+            # y_ang_current_error = 0
+            # y_ang_set_point_reached = False
+            # z_ang_output = 0
+            # z_ang_current_error = 0
+            # z_ang_set_point_reached = False
+            combined_position_outputs = [0] * 6
+            combined_position_errors = [0] * 6
+            combined_position_set_points_reached = [False] * 6
 
         # Calculate each non-pose-based control input
         y_lin_output, y_lin_set_point_reached, y_lin_current_error = self.linear_y_controller.calculate_output(
@@ -517,7 +536,7 @@ class RobotControlNode(BasicNode):
         if self.o_t_ee is not None:
             if self.in_contact_with_patient or self.override_contact_with_patient:
                 if self.use_pose_feedback_flag:
-                    control_input_array = control_input_array + [x_lin_output, 0, 0, 0, -y_ang_output, -z_ang_output]
+                    control_input_array = control_input_array + combined_position_outputs
                 if self.use_force_feedback_flag:
                     control_input_array[2] = control_input_array[2] + z_lin_output
             if self.in_contact_with_patient and not self.image_is_frozen:
@@ -566,10 +585,23 @@ class RobotControlNode(BasicNode):
 
         # Publish the status of each controller
         if self.publish_controller_statuses:
-            self.linear_x_controller_status_publisher.publish(
-                ControllerStatus(controller_name='Trajectory Controller', in_use=self.use_pose_feedback_flag,
-                                 current_error=x_lin_current_error, output=x_lin_output,
-                                 set_point_reached=x_lin_set_point_reached))
+            # self.linear_x_controller_status_publisher.publish(
+            #     ControllerStatus(controller_name='Trajectory Controller', in_use=self.use_pose_feedback_flag,
+            #                      current_error=x_lin_current_error, output=x_lin_output,
+            #                      set_point_reached=x_lin_set_point_reached))
+            new_msg = CombinedPositionControllerStatus(controller_name='Combined Position Controller',
+                                                       in_use=self.use_pose_feedback_flag)
+
+            for msg_attribute, index in zip([new_msg.lin_x_controller_status, new_msg.lin_y_controller_status,
+                                             new_msg.lin_z_controller_status, new_msg.ang_x_controller_status,
+                                             new_msg.ang_y_controller_status, new_msg.ang_z_controller_status],
+                                            CONTROLLER_KEYS):
+                msg_attribute = ControllerStatus(
+                    in_use=self.combined_position_controller.get_status_of_feature_axes()[index],
+                    current_error=combined_position_errors[index],
+                    output=combined_position_outputs[index],
+                    set_point_reached=combined_position_set_points_reached[index])
+            self.combined_position_controller_status_publisher.publish(new_msg)
             self.linear_y_controller_status_publisher.publish(
                 ControllerStatus(controller_name='Image Controller', in_use=self.use_image_feedback_flag,
                                  current_error=y_lin_current_error, output=y_lin_output,
@@ -582,14 +614,14 @@ class RobotControlNode(BasicNode):
                 ControllerStatus(controller_name='Patient Contact Controller', in_use=self.use_balancing_feedback_flag,
                                  current_error=x_ang_current_error, output=x_ang_output,
                                  set_point_reached=x_ang_set_point_reached))
-            self.angular_y_controller_status_publisher.publish(
-                ControllerStatus(controller_name='Trajectory Controller', in_use=self.use_pose_feedback_flag,
-                                 current_error=y_ang_current_error, output=y_ang_output,
-                                 set_point_reached=y_ang_set_point_reached))
-            self.angular_z_controller_status_publisher.publish(
-                ControllerStatus(controller_name='Trajectory Controller', in_use=self.use_pose_feedback_flag,
-                                 current_error=z_ang_current_error, output=z_ang_output,
-                                 set_point_reached=z_ang_set_point_reached))
+            # self.angular_y_controller_status_publisher.publish(
+            #     ControllerStatus(controller_name='Trajectory Controller', in_use=self.use_pose_feedback_flag,
+            #                      current_error=y_ang_current_error, output=y_ang_output,
+            #                      set_point_reached=y_ang_set_point_reached))
+            # self.angular_z_controller_status_publisher.publish(
+            #     ControllerStatus(controller_name='Trajectory Controller', in_use=self.use_pose_feedback_flag,
+            #                      current_error=z_ang_current_error, output=z_ang_output,
+            #                      set_point_reached=z_ang_set_point_reached))
 
         # Publish the cleaned force
         self.publish_cleaned_force()
@@ -597,13 +629,19 @@ class RobotControlNode(BasicNode):
         # Publish the combined position error
         new_msg = TwistStamped()
         new_msg.header.stamp = Time.now()
-        new_msg.twist.linear.x = x_lin_current_error
-        new_msg.twist.angular.y = y_ang_current_error
-        new_msg.twist.angular.z = z_ang_current_error
+        new_msg.twist.linear.x = combined_position_outputs[X_LINEAR_CONTROLLER]
+        new_msg.twist.linear.y = combined_position_outputs[Y_LINEAR_CONTROLLER]
+        new_msg.twist.linear.z = combined_position_outputs[Z_LINEAR_CONTROLLER]
+        new_msg.twist.angular.x = combined_position_outputs[X_ANGULAR_CONTROLLER]
+        new_msg.twist.angular.y = combined_position_outputs[Y_ANGULAR_CONTROLLER]
+        new_msg.twist.angular.z = combined_position_outputs[Z_ANGULAR_CONTROLLER]
         self.combined_position_error_publisher.publish(new_msg)
 
         # Publish the goal reached status for each controller
-        self.position_lin_x_goal_reached_publisher.publish(x_lin_set_point_reached)
+        self.position_control_goal_reached_publisher.publish(
+            all([set_point_success or not axis_locked for set_point_success, axis_locked in
+                 zip(combined_position_set_points_reached,
+                     self.combined_position_controller.get_status_of_feature_axes())]))
         self.image_centering_goal_reached_publisher.publish(y_lin_set_point_reached)
         self.force_goal_reached_publisher.publish(z_lin_set_point_reached)
         self.image_balancing_goal_reached_publisher.publish(x_ang_set_point_reached)

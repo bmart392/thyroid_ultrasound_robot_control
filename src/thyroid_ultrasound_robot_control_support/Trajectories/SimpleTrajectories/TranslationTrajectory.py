@@ -24,7 +24,7 @@ class TranslationTrajectory(SimpleTrajectory):
                          starting_pose=starting_pose,
                          generate_trajectory_on_call=generate_trajectory_on_call)
 
-    def generate(self) -> array:
+    def generate(self) -> Feature:
         """
         Generates a trajectory between the starting-pose and a pose the ending-pose-offset distance away.
 
@@ -72,7 +72,7 @@ class TranslationTrajectory(SimpleTrajectory):
             locked_axes = tuple(locked_axes + [UNLOCKED] + [LOCKED] * 2)
 
             # For each column vector in the trajectory
-            for ii in range(trajectory.shape[1]):
+            for ii in range(num_points):
 
                 # Create a zero rotation and translation homogeneous transformation matrix
                 temp_transformation_matrix = zeros((4, 4))

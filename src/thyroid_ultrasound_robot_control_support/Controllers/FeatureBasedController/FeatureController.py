@@ -2,17 +2,13 @@
 
 # Import standard python packages
 from typing import List, Dict, Tuple
-from numpy import array, ndarray, append, linspace
+from numpy import array, ndarray, append, linspace, zeros
 
 # Import custom python packages
 from thyroid_ultrasound_robot_control_support.Controllers.BasicController import BasicController
 from thyroid_ultrasound_robot_control_support.Controllers.FeatureBasedController.Feature import Feature, \
-    REFERENCE_FRAME
+    FEATURE_FRAME
 from thyroid_ultrasound_robot_control_support.Controllers.ControllerConstants import *
-
-# Define a tuple of all the controller names
-CONTROLLER_KEYS = (X_LINEAR_CONTROLLER, Y_LINEAR_CONTROLLER, Z_LINEAR_CONTROLLER,
-                   X_ANGULAR_CONTROLLER, Y_ANGULAR_CONTROLLER, Z_ANGULAR_CONTROLLER)
 
 
 class FeatureController:
@@ -40,6 +36,12 @@ class FeatureController:
         max_outputs
             The maximum output that each sub-controller is allowed to produce.
         """
+
+        # Expand the output options to be a list of six if None are given
+        if min_outputs is None:
+            min_outputs = [None] * 6
+        if max_outputs is None:
+            max_outputs = [None] * 6
 
         # Create the basic controller for each axis
         self.controllers = {X_LINEAR_CONTROLLER: BasicController(p_gain=p_gains[X_LINEAR_CONTROLLER],
@@ -102,16 +104,27 @@ class FeatureController:
         # Save the new feature
         self.feature_set_point = new_feature_set_point
 
-        # Convert the feature into set points for each of the controllers, based on whether that feature is locked
-        for controller_key, axis_status, individual_set_point in zip(CONTROLLER_KEYS,
-                                                                     new_feature_set_point.status_of_axes,
-                                                                     [0] * 6):
-            # If the axis is locked, set the appropriate set point for the appropriate controller
-            if axis_status:
-                self.controllers[controller_key].update_set_point(individual_set_point)
-            # Otherwise clear the set point
-            else:
+        # If given a feature as a set point,
+        if type(new_feature_set_point) == Feature:
+            # Convert the feature into set points for each of the controllers, based on whether that feature is locked
+            for controller_key, axis_status, individual_set_point in zip(CONTROLLER_KEYS,
+                                                                         new_feature_set_point.status_of_axes,
+                                                                         [0] * 6):
+                # If the axis is locked, set the appropriate set point for the appropriate controller
+                if axis_status:
+                    self.controllers[controller_key].update_set_point(individual_set_point)
+                # Otherwise clear the set point
+                else:
+                    self.controllers[controller_key].update_set_point(None)
+
+        # Otherwise, if given None, clear all set points
+        elif new_feature_set_point is None:
+            for controller_key in CONTROLLER_KEYS:
                 self.controllers[controller_key].update_set_point(None)
+
+        # Otherwise, raise an error for incorrect type
+        else:
+            raise Exception('Incorrect type of ' + str(type(new_feature_set_point)) + ' given as set point.')
 
     def set_gain(self, controller_selector: int, channel_selector: int, new_gain_value: float):
         """
@@ -145,8 +158,7 @@ class FeatureController:
         except IndexError:
             raise Exception("Controller selector of " + str(controller_selector) + " was not recognized.")
 
-    def calculate_output(self, given_pose: ndarray) -> Tuple[Dict[int, Tuple[float, bool, float]], bool,
-                                                             Dict[int, Tuple[float, bool, float]]]:
+    def calculate_output(self, given_pose: ndarray) -> Tuple[List[float], List[bool], List[float]]:
         """
         Calculates the control output of each controller based on the given pose.
         Also returns if the set point has been reached and the current error of the system.
@@ -164,31 +176,38 @@ class FeatureController:
             and a dictionary containing the error values from each sub-controller
         """
 
-        # Calculate the error between the given 
-        translation_error, rotation_error, result_reference_frame = self.feature_set_point.distance_to_reference_pose(
-            reference_pose=given_pose,
-            result_reference_frame=REFERENCE_FRAME)
+        # Calculate the error between the given
+        if self.feature_set_point is not None:
+            translation_error, rotation_error, result_reference_frame = \
+                self.feature_set_point.distance_to_reference_pose(reference_pose=given_pose,
+                                                                  result_reference_frame=FEATURE_FRAME)
+        else:
+            translation_error = zeros(3)
+            rotation_error = zeros(3)
+            result_reference_frame = 'None'
 
         # Define variables for storing the values to return from the function
-        output_values_to_return = {}
-        combined_success_value = True
-        error_values_to_return = {}
+        output_values_to_return = [0] * 6
+        individual_success_values = [False] * 6
+        error_values_to_return = [0] * 6
 
         # For each controller and new reading,
         for controller_key, new_value in zip(CONTROLLER_KEYS, append(translation_error, rotation_error)):
 
             # Calculate the output value, success result, and current error value
-            output_values_to_return[controller_key], temp_success_result, error_values_to_return[controller_key] = \
-                self.controllers[controller_key].calculate_output(new_value)
+            output_values_to_return[controller_key], individual_success_values[controller_key], \
+             error_values_to_return[controller_key] = self.controllers[controller_key].calculate_output(new_value)
 
-            # If the controller does not have a set_point, overwrite the error success result as True
-            if self.controllers[controller_key].set_point is None:
-                temp_success_result = True
+        return output_values_to_return, individual_success_values, error_values_to_return
 
-            # Calculate the overall success result
-            combined_success_value = combined_success_value and temp_success_result
+    def get_status_of_feature_axes(self):
+        """Returns the locking status of each axis of the feature set point.
+        If there is no set point, values of False are returned."""
 
-        return output_values_to_return, combined_success_value, error_values_to_return
+        if self.feature_set_point is not None:
+            return self.feature_set_point.status_of_axes
+        else:
+            return [False] * 6
 
 
 if __name__ == '__main__':
@@ -213,7 +232,7 @@ if __name__ == '__main__':
                                                                   [0, 1, 0, 0],
                                                                   [0, 0, 1, 0],
                                                                   [0, 0, 0, 1]]),
-                                             status_of_axes=(True, True, True, False, False, False)))
+                                             status_of_axes=(True, False, False, False, False, False)))
 
     for x, y, z in zip(x_values, y_values, z_values):
         temp_pose = array([[1, 0, 0, x],
@@ -223,11 +242,11 @@ if __name__ == '__main__':
 
         results = test_controller.calculate_output(temp_pose)
 
-        heading = 'Feature Set Point Reached? ' + str(results[1])
+        heading = 'Feature Set Point Reached? ' + \
+                  str(all([a or not b for a, b in zip(results[1], test_controller.feature_set_point.status_of_axes)]))
         print('-' * len(heading))
         print(heading)
         print('-' * len(heading))
         for key in CONTROLLER_KEYS:
-
             print('Axis ' + '{:01}'.format(key) + ' - Output: ' + '{:05}'.format(results[0][key]) +
                   ' - Error: ' + '{:05}'.format(results[2][key]))

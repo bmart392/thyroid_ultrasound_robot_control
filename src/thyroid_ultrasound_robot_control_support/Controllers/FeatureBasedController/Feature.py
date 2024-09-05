@@ -72,7 +72,7 @@ class Feature:
             self.status_of_axes = status_of_axes
 
         # Calculate the matrix needed to find the error between any pose and the defining pose
-        self.inverse_of_feature_origin = calc_inverse(defining_pose)
+        self.inverse_of_feature_origin = calc_inverse(self.feature_origin)
 
     def distance_to_reference_pose(self, reference_pose: array,
                                    result_reference_frame: str = FEATURE_FRAME) -> Tuple:
@@ -89,7 +89,7 @@ class Feature:
         Returns
         -------
         tuple
-            A tuple containing the translational error as a (3, 1) numpy array and the rotational error as a (3, 1)
+            A tuple containing the translational error as a numpy array and the rotational error as a
             numpy array both w.r.t. the given reference frame. In addition, the reference frame selected will be
             returned.
         """

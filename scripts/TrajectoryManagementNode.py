@@ -327,8 +327,15 @@ class TrajectoryManagementNode(BasicNode):
 
                     elif self.data_has_been_registered:
 
-                        # Send the waypoint
+                        # Update the trajectory
                         self.current_trajectory_object.update()
+
+                        # Send the next waypoint to the robot
+                        if self.current_trajectory_object.is_complete():
+                            self.clear_current_set_points_service(True)
+                        else:
+                            self.set_next_feature_waypoint_service(
+                                self.current_trajectory_object.get_current().to_msg())
 
                         # Set the segmentation back to growth mode
                         self.set_segmentation_phase_service(GROWTH_PHASE)
