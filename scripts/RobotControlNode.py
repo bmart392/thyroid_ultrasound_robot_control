@@ -12,6 +12,7 @@ from geometry_msgs.msg import TwistStamped, WrenchStamped, TransformStamped
 from tf2_ros import StaticTransformBroadcaster
 from std_msgs.msg import Float64MultiArray
 from armer_msgs.msg import ManipulatorState
+from franka_msgs.msg import FrankaState
 
 # Import standard packages
 from numpy import zeros, array, median, append, arange
@@ -71,7 +72,7 @@ class RobotControlNode(BasicNode):
         #                                             d_gain=0.00, i_gain=0)  # z rotation, position-based, error = deg
 
         self.combined_position_controller = FeatureController(p_gains=[1.5, 1.5, 1.5, 0.01, 0.01, 0.01],
-                                                              error_tolerances=[.0005, .0005, .0005, .05, .05, .05],
+                                                              error_tolerances=[.00005, .00005, .00005, .05, .05, .05],
                                                               d_gains=[0] * 6,
                                                               i_gains=[0] * 6)
 
@@ -171,6 +172,7 @@ class RobotControlNode(BasicNode):
 
         # Create state subscribers
         Subscriber(ARMER_STATE, ManipulatorState, self.robot_state_callback)
+        Subscriber('/franka_state_controller/franka_states', FrankaState, self.temp_robot_state_callback)
         Subscriber(ROBOT_FORCE, WrenchStamped, self.robot_force_callback)
         Subscriber(RC_PATIENT_CONTACT_ERROR, Float64Stamped, self.patient_contact_error_callback)
         Subscriber(RC_IMAGE_ERROR, TwistStamped, self.image_error_callback)
@@ -200,9 +202,6 @@ class RobotControlNode(BasicNode):
         Service(RC_OVERALL_ROBOT_SPEED, Float64Request, self.overall_speed_factor_handler)
 
         # Create services for trajectory management
-        # Service(RC_SET_TRAJECTORY_PITCH, Float64Request, self.set_trajectory_pitch_handler)
-        # Service(RC_SET_TRAJECTORY_YAW, Float64Request, self.set_trajectory_yaw_handler)
-        # Service(RC_SET_NEXT_WAYPOINT, Float64MultiArrayRequest, self.set_next_waypoint_handler)
         Service(RC_CLEAR_CURRENT_SET_POINTS, BoolRequest, self.clear_current_set_points_handler)
         Service(RC_SET_NEXT_FEATURE_WAYPOINT, TrajectoryWaypoint, self.set_next_feature_waypoint_handler)
 
@@ -249,6 +248,10 @@ class RobotControlNode(BasicNode):
 
         if self.simulate_robot_force_readings:
             self.robot_force_callback(msg.ee_wrench)
+
+    def temp_robot_state_callback(self, msg: FrankaState):
+
+        self.o_t_ee = msg.O_T_EE
 
     # endregion
     ############################
@@ -359,29 +362,7 @@ class RobotControlNode(BasicNode):
     ##################
     # Trajectory handlers
     # region
-    # def set_next_waypoint_handler(self, msg: Float64MultiArrayRequestRequest):
-    #
-    #     # Publish the message
-    #     self.position_goal_surface_publisher.publish(msg.next_waypoint)
-    #
-    #     # Create a new surface based on the given vertices and set that surface as the set-point for the controller
-    #     self.linear_x_controller.update_set_point(
-    #         Surface(array(msg.next_waypoint.data).reshape((3, 3)))
-    #     )
-    #
-    #     # Publish the current set point as a transform to visualize it in RViz
-    #     self.publish_goal_surface_as_transform()
-    #
-    #     return Float64MultiArrayRequestResponse(True, NO_ERROR)
 
-    # def set_trajectory_pitch_handler(self, msg: Float64RequestRequest):
-    #     self.angular_y_controller.update_set_point(msg.value)
-    #     return Float64RequestResponse(True, NO_ERROR)
-    #
-    # def set_trajectory_yaw_handler(self, msg: Float64RequestRequest):
-    #     self.angular_z_controller.update_set_point(msg.value)
-    #     return Float64RequestResponse(True, NO_ERROR)
-    #
     def clear_current_set_points_handler(self, req: BoolRequestRequest):
         if req.value:
             # self.linear_x_controller.update_set_point(None)

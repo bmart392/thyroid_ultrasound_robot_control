@@ -60,7 +60,7 @@ class PoseToPoseTrajectory(SimpleTrajectory):
             for ii in range(num_points):
                 self.components_in_trajectory.append(
                     Feature(defining_pose=intermediate_poses[ii],
-                            status_of_axes=tuple([LOCKED] * 6)))
+                            status_of_axes=tuple([LOCKED, LOCKED, LOCKED, LOCKED, LOCKED, LOCKED])))
 
         else:
             raise Exception("The ending-pose cannot be None.")
